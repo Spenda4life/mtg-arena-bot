@@ -1,0 +1,35 @@
+arena:
+  # Window title to search for (partial match)
+  window_title: "MTGA"
+  # Target resolution the bot was calibrated against
+  reference_resolution: [2560, 1440]
+  # Polling interval in seconds between game state reads
+  poll_interval: 0.5
+  # How long to wait after clicking before re-polling
+  action_delay: 0.8
+
+vision:
+  # Minimum confidence for template matches (0-1)
+  template_threshold: 0.80
+  # Minimum confidence for OCR reads
+  ocr_confidence: 60
+  # Debug: save annotated screenshots each loop iteration
+  debug_screenshots: false
+  debug_output_dir: "captures/"
+
+engine:
+  # Aggression level: controls attack/block decisions (0.0 = conservative, 1.0 = all-in)
+  aggression: 0.7
+  # If true, pass priority immediately when no action is available
+  auto_pass: true
+  # Maximum seconds to hold priority before auto-passing
+  priority_timeout: 5.0
+
+deck:
+  # Path to the active deck file
+  active: "decks/active_deck.yaml"
+
+logging:
+  level: "INFO"
+  file: "logs/bot.log"
+  rotation: "10 MB"

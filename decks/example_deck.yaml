@@ -1,0 +1,37 @@
+# Standard BO1 deck definition
+# Each card needs a name and the number of copies.
+# The engine uses this to know the composition of your deck
+# for probability-based decisions.
+
+name: "Example Aggro Red"
+format: "standard_bo1"
+
+mainboard:
+  - name: "Lightning Strike"
+    count: 4
+    type: instant
+    cmc: 2
+    color: R
+  - name: "Monastery Swiftspear"
+    count: 4
+    type: creature
+    cmc: 1
+    color: R
+    power: 1
+    toughness: 1
+    keywords: [haste, prowess]
+  - name: "Play with Fire"
+    count: 4
+    type: instant
+    cmc: 1
+    color: R
+  - name: "Kumano Faces Kakkazan"
+    count: 4
+    type: enchantment
+    cmc: 1
+    color: R
+  - name: "Mountain"
+    count: 20
+    type: land
+    color: R
+    produces: [R]

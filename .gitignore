@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# Screenshots and captures saved at runtime
+captures/
+logs/
+
+# Vision templates that may contain copyrighted assets
+src/vision/templates/*.png
+src/vision/templates/*.jpg
+!src/vision/templates/.gitkeep
+
+config/settings.local.yaml
