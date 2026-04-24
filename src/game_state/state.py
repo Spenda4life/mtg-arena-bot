@@ -107,3 +107,5 @@ class GameState:
     ok_button_pos: Optional[tuple[int, int]] = None
     keep_hand_button_pos: Optional[tuple[int, int]] = None
     mulligan_button_pos: Optional[tuple[int, int]] = None
+    # Action types Arena says are currently legal (from GSM actions array)
+    available_action_types: list[str] = field(default_factory=list)

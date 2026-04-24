@@ -7,6 +7,8 @@ from loguru import logger
 from src.capture.screen import ScreenCapture
 from src.vision.detector import VisionDetector
 from src.game_state.log_parser import ArenaLogParser
+from src.game_state.grp_db import GrpDatabase
+from src.game_state.match import MatchStateMachine, MatchStatus
 from src.game_state.state import GameState
 from src.engine.decision import DecisionEngine
 from src.engine.actions import Action
@@ -26,7 +28,7 @@ class Bot:
     """
     Main bot loop.
 
-    Game state comes from the Arena log file (authoritative, structured).
+    Game state comes from the Arena log file (authoritative, structured JSON).
     Button positions come from screen capture + template matching.
     Actions are executed via PyAutoGUI.
     """
@@ -42,12 +44,14 @@ class Bot:
         self.debug_screenshots = vision_cfg.get("debug_screenshots", False)
         self.debug_dir = vision_cfg.get("debug_output_dir", "captures/")
 
+        grp_db = GrpDatabase()
         self.capture = ScreenCapture()
         self.detector = VisionDetector(
             reference_resolution=ref_res,
             threshold=vision_cfg.get("template_threshold", 0.80),
         )
-        self.log_parser = ArenaLogParser()
+        self.log_parser = ArenaLogParser(grp_db=grp_db)
+        self.match_fsm = MatchStateMachine()
         self.engine = DecisionEngine(aggression=engine_cfg.get("aggression", 0.7))
         self.controller = InputController(
             action_delay=arena_cfg.get("action_delay", 0.8)
@@ -63,17 +67,17 @@ class Bot:
                 self._tick()
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
-            logger.info("Bot stopped by user.")
+            logger.info("Bot stopped.")
 
     def _tick(self) -> None:
         self._iteration += 1
 
-        # 1. Update game state from log (authoritative source)
+        # 1. Pull new game state from log
         updated = self.log_parser.poll()
         if updated is not None:
             self._state = updated
 
-        # 2. Overlay button positions from screen (vision only used for UI chrome)
+        # 2. Overlay button positions from screen
         frame = self.capture.grab()
         if self.debug_screenshots:
             Path(self.debug_dir).mkdir(parents=True, exist_ok=True)
@@ -82,12 +86,21 @@ class Bot:
                 annotated, f"{self.debug_dir}/frame_{self._iteration:06d}.png"
             )
         buttons = self.detector.detect_buttons(frame)
-        self._state.pass_button_visible, self._state.pass_button_pos   = buttons["pass"]
-        self._state.ok_button_visible,   self._state.ok_button_pos     = buttons["ok"]
+        self._state.pass_button_visible,    self._state.pass_button_pos    = buttons["pass"]
+        self._state.ok_button_visible,      self._state.ok_button_pos      = buttons["ok"]
         self._state.keep_hand_button_visible, self._state.keep_hand_button_pos = buttons["keep_hand"]
         self._state.mulligan_button_visible,  self._state.mulligan_button_pos  = buttons["mulligan"]
 
-        # 3. Decide and act
-        action: Action | None = self.engine.decide(self._state)
+        # 3. Update match lifecycle
+        ctx = self.match_fsm.update(self._state)
+
+        # 4. Don't act while idle/searching — wait for a game
+        if ctx.status in (MatchStatus.IDLE, MatchStatus.SEARCHING, MatchStatus.GAME_OVER):
+            return
+
+        # 5. Decide and act
+        action: Action | None = self.engine.decide(self._state, ctx)
         if action:
+            if action.type.name == "MULLIGAN":
+                self.match_fsm.record_mulligan()
             self.controller.execute(action)

@@ -2,6 +2,7 @@ from __future__ import annotations
 from loguru import logger
 
 from src.game_state.state import GameState, Phase, CardObject
+from src.game_state.match import MatchContext, MatchStatus
 from src.engine.actions import Action, ActionType
 
 
@@ -22,7 +23,7 @@ class DecisionEngine:
         self._land_played_this_turn = False
         self._last_phase: Phase = Phase.UNKNOWN
 
-    def decide(self, state: GameState) -> Action | None:
+    def decide(self, state: GameState, ctx: MatchContext | None = None) -> Action | None:
         # Reset land-played tracker on new turn
         if state.phase == Phase.BEGINNING and self._last_phase == Phase.ENDING:
             self._land_played_this_turn = False

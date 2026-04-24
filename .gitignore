@@ -20,3 +20,6 @@ src/vision/templates/*.jpg
 !src/vision/templates/.gitkeep
 
 config/settings.local.yaml
+
+# Downloaded card databases (large files)
+data/scryfall_cards.json
