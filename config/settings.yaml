@@ -29,6 +29,25 @@ deck:
   # Path to the active deck file
   active: "decks/active_deck.yaml"
 
+layout:
+  # Fractional positions (0-1) of Arena UI zones.
+  # Calibrated for 2560x1440 and 1920x1080 (same fractions).
+  # Adjust here if cards are being clicked in the wrong spot.
+  hand_y: 0.905
+  hand_x_min: 0.175
+  hand_x_max: 0.825
+  our_creatures_y: 0.615
+  our_creatures_x_min: 0.12
+  our_creatures_x_max: 0.88
+  our_lands_y: 0.725
+  our_lands_x_min: 0.12
+  our_lands_x_max: 0.88
+  opp_creatures_y: 0.385
+  opp_creatures_x_min: 0.12
+  opp_creatures_x_max: 0.88
+  opp_player_x: 0.5
+  opp_player_y: 0.06
+
 logging:
   level: "INFO"
   file: "logs/bot.log"

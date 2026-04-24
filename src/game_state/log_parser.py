@@ -8,6 +8,7 @@ from loguru import logger
 
 from src.game_state.state import GameState, PlayerState, CardObject, Phase, Zone
 from src.game_state.grp_db import GrpDatabase
+from src.vision.layout import CardPositionMapper
 
 # Default log location on Windows
 LOG_PATH = Path.home() / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
@@ -126,10 +127,12 @@ class ArenaLogParser:
     mana pools, phase/step, and available actions.
     """
 
-    def __init__(self, grp_db: GrpDatabase | None = None, log_path: Path = LOG_PATH):
+    def __init__(self, grp_db: GrpDatabase | None = None, log_path: Path = LOG_PATH,
+                 layout: CardPositionMapper | None = None):
         self.tailer = LogTailer(log_path)
         self.extractor = JsonStreamExtractor()
         self.grp_db = grp_db or GrpDatabase()
+        self.layout = layout  # assigned by Bot after screen size is known
         self._our_seat: int | None = None
         self._state = GameState()
 
@@ -326,6 +329,13 @@ class ArenaLogParser:
         self._state.we.graveyard = our_grave
         self._state.opponent.battlefield = opp_bf
         self._state.stack = [c.name for c in stack]
+
+        # Assign pixel coordinates via layout mapper
+        if self.layout:
+            self.layout.assign_hand_positions(our_hand)
+            self.layout.assign_battlefield_positions(our_bf, is_ours=True)
+            self.layout.assign_battlefield_positions(opp_bf, is_ours=False)
+            self._state.opponent_player_pos = self.layout.opp_player_position()
 
     def _make_card(self, obj: dict, zone: Zone) -> CardObject:
         grp_id = obj.get("grpId", 0)

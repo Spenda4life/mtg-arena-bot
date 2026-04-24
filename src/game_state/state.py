@@ -109,3 +109,5 @@ class GameState:
     mulligan_button_pos: Optional[tuple[int, int]] = None
     # Action types Arena says are currently legal (from GSM actions array)
     available_action_types: list[str] = field(default_factory=list)
+    # Pixel position of the opponent avatar/life total (for targeting face)
+    opponent_player_pos: Optional[tuple[int, int]] = None

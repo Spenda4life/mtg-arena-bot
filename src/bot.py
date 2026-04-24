@@ -6,6 +6,7 @@ from loguru import logger
 
 from src.capture.screen import ScreenCapture
 from src.vision.detector import VisionDetector
+from src.vision.layout import CardPositionMapper
 from src.game_state.log_parser import ArenaLogParser
 from src.game_state.grp_db import GrpDatabase
 from src.game_state.match import MatchStateMachine, MatchStatus
@@ -50,7 +51,8 @@ class Bot:
             reference_resolution=ref_res,
             threshold=vision_cfg.get("template_threshold", 0.80),
         )
-        self.log_parser = ArenaLogParser(grp_db=grp_db)
+        layout = CardPositionMapper.from_config(config)
+        self.log_parser = ArenaLogParser(grp_db=grp_db, layout=layout)
         self.match_fsm = MatchStateMachine()
         self.engine = DecisionEngine(aggression=engine_cfg.get("aggression", 0.7))
         self.controller = InputController(
