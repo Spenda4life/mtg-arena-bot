@@ -39,20 +39,34 @@ def _find_arena_card_file() -> Path | None:
 
 
 def _load_arena_sqlite(path: Path) -> dict[int, dict]:
-    """Load card names from Arena's Raw_CardDatabase_*.mtga SQLite file."""
+    """Load card metadata from Arena's Raw_CardDatabase_*.mtga SQLite file."""
     db: dict[int, dict] = {}
     try:
         con = sqlite3.connect(str(path))
         rows = con.execute("""
-            SELECT c.GrpId, l.Loc
+            SELECT c.GrpId, l.Loc,
+                   c.Types, c.Subtypes, c.Colors,
+                   c.Power, c.Toughness,
+                   c.Order_CMCWithXLast
             FROM Cards c
             JOIN Localizations_enUS l ON c.TitleId = l.LocId
             WHERE l.Loc IS NOT NULL
         """).fetchall()
         con.close()
-        for grp_id, name in rows:
-            db[grp_id] = {"grpId": grp_id, "name": name}
-        logger.info(f"Loaded {len(db)} card names from Arena SQLite DB: {path.name}")
+        for grp_id, name, types_raw, subtypes_raw, colors_raw, power, toughness, cmc in rows:
+            type_str = _sqlite_types_to_str(types_raw)
+            db[grp_id] = {
+                "grpId":      grp_id,
+                "name":       name,
+                "cmc":        int(cmc) if cmc is not None else 0,
+                "type":       type_str,
+                "color":      _sqlite_colors_to_str(colors_raw),
+                "power":      _safe_int(power),
+                "toughness":  _safe_int(toughness),
+                "keywords":   [],
+                "produces":   _sqlite_produces(subtypes_raw, type_str),
+            }
+        logger.info(f"Loaded {len(db)} cards from Arena SQLite DB: {path.name}")
     except Exception as e:
         logger.warning(f"Failed to load Arena SQLite card DB: {e}")
     return db
@@ -212,3 +226,58 @@ def _safe_int(val) -> int | None:
         return int(val)
     except (TypeError, ValueError):
         return None
+
+
+# SQLite card type integer → readable string (from Enums WHERE Type='CardType')
+_SQLITE_TYPE_MAP = {
+    1: "artifact", 2: "creature", 3: "enchantment", 4: "instant",
+    5: "land", 6: "phenomenon", 7: "plane", 8: "planeswalker",
+    9: "scheme", 10: "sorcery", 11: "kindred", 12: "vanguard",
+    13: "dungeon", 14: "battle",
+}
+# SQLite color integer → letter
+_SQLITE_COLOR_MAP = {1: "W", 2: "U", 3: "B", 4: "R", 5: "G"}
+_SQLITE_SUBTYPE_LANDS = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "forest": "G"}
+# Integer subtype IDs for basic land types
+_SQLITE_SUBTYPE_ID_LANDS = {29: "G", 43: "U", 49: "R", 54: "W", 69: "B"}
+
+
+def _sqlite_types_to_str(raw: str) -> str:
+    if not raw:
+        return ""
+    parts = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        try:
+            parts.append(_SQLITE_TYPE_MAP.get(int(tok), tok))
+        except ValueError:
+            parts.append(tok.lower())
+    return " ".join(parts)
+
+
+def _sqlite_colors_to_str(raw: str) -> str:
+    if not raw:
+        return "C"
+    result = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        try:
+            result.append(_SQLITE_COLOR_MAP.get(int(tok), tok))
+        except ValueError:
+            result.append(tok)
+    return "".join(result) or "C"
+
+
+def _sqlite_produces(subtypes_raw: str, type_str: str) -> list[str]:
+    if "land" not in type_str or not subtypes_raw:
+        return []
+    for tok in subtypes_raw.split(","):
+        tok = tok.strip()
+        try:
+            color = _SQLITE_SUBTYPE_ID_LANDS.get(int(tok))
+            if color:
+                return [color]
+        except ValueError:
+            if tok.lower() in _SQLITE_SUBTYPE_LANDS:
+                return [_SQLITE_SUBTYPE_LANDS[tok.lower()]]
+    return []

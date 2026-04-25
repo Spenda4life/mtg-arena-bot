@@ -18,7 +18,7 @@ from src.game_state.match import MatchStateMachine, MatchStatus
 
 def _bar(label: str, value: int, max_val: int = 20, width: int = 20) -> str:
     filled = int(width * min(value, max_val) / max_val)
-    bar = "█" * filled + "░" * (width - filled)
+    bar = "#" * filled + "-" * (width - filled)
     return f"{label}: [{bar}] {value}"
 
 
@@ -34,7 +34,7 @@ def _fmt_card_list(cards, label: str) -> str:
             flags.append("sick")
         pt = f" {c.power}/{c.toughness}" if c.power is not None else ""
         flag_str = f" [{', '.join(flags)}]" if flags else ""
-        lines.append(f"    • {c.name}{pt}{flag_str}")
+        lines.append(f"    * {c.name}{pt}{flag_str}")
     return "\n".join(lines)
 
 

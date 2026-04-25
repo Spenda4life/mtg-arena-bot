@@ -15,6 +15,7 @@ SAMPLE_GSM_PAYLOAD = {
                         "activePlayer": 1,
                         "turnNumber": 3,
                         "phase": "Phase_Main1",
+                        "priorityPlayer": 1,
                     },
                     "players": [
                         {"seatId": 1, "lifeTotal": 18, "systemSeatIds": [1],
@@ -56,7 +57,6 @@ SAMPLE_GSM_PAYLOAD = {
                             "hasSummoningSickness": False,
                         },
                     ],
-                    "priorityPlayer": {"seatId": 1},
                 }
             }
         ]

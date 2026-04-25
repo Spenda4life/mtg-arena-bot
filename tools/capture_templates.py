@@ -14,11 +14,13 @@ Instructions:
   6. Repeat for each button.
 
 Required buttons:
+  btn_keep.png     — "Keep" hand button (mulligan screen)
+  btn_mulligan.png — "Mulligan" button (mulligan screen)
+
+Optional (spacebar handles these via Arena's default action):
   btn_pass.png     — the "Pass" / "Pass Turn" button (bottom right)
   btn_ok.png       — the "OK" / confirm button
-  btn_keep.png     — "Keep" hand button
-  btn_mulligan.png — "Mulligan" button
-  (optional) mana_w/u/b/r/g/c.png — mana pip icons for mana detection
+  mana_w/u/b/r/g/c.png — mana pip icons for mana detection
 """
 import sys
 import os

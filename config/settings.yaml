@@ -16,8 +16,9 @@ arena:
   action_delay: 0.8
 
 vision:
-  # Minimum confidence for template matches (0-1)
-  template_threshold: 0.80
+  # Minimum confidence for template matches (0-1).
+  # Keep high enough that grayed-out/inactive buttons don't match.
+  template_threshold: 0.88
   # Minimum confidence for OCR reads
   ocr_confidence: 60
   # Debug: save annotated screenshots each loop iteration
@@ -31,6 +32,19 @@ engine:
   auto_pass: true
   # Maximum seconds to hold priority before auto-passing
   priority_timeout: 5.0
+
+navigation:
+  # Deck name to select in the Bot Match deck picker (must match Arena's deck list exactly)
+  deck_name: "Izzet Lessons"
+  # Fractional [x, y] position of the first deck entry in the deck selection list.
+  # Adjust if Izzet Lessons is not the first/top deck shown.
+  deck_list_position: [0.22, 0.27]
+  # Seconds to wait after each menu click before looking for the next button
+  nav_click_delay: 1.5
+  # How many times to retry finding a nav button before giving up
+  max_retries: 3
+  # Seconds to wait for the mulligan screen after clicking Submit
+  game_start_timeout: 30
 
 deck:
   # Path to the active deck file

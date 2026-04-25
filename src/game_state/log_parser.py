@@ -56,6 +56,10 @@ class LogTailer:
     Handles log rotation (Arena overwrites the file on each launch).
     """
 
+    # How far back to seek from EOF on first open. Enough to catch the current
+    # game's opening GSM even if the bot starts mid-mulligan.
+    LOOKBACK_BYTES = 512 * 1024  # 512 KB
+
     def __init__(self, path: Path = LOG_PATH):
         self.path = path
         self._fh = None
@@ -64,7 +68,11 @@ class LogTailer:
     def _open(self, seek_end: bool = True) -> None:
         self._fh = open(self.path, "r", encoding="utf-8", errors="replace")
         if seek_end:
-            self._fh.seek(0, 2)
+            file_size = self.path.stat().st_size
+            lookback = max(0, file_size - self.LOOKBACK_BYTES)
+            self._fh.seek(lookback)
+            if lookback > 0:
+                self._fh.readline()  # discard partial line at seek point
         self._size = self.path.stat().st_size
 
     def lines(self) -> Iterator[str]:
@@ -156,6 +164,15 @@ class ArenaLogParser:
         self._zone_types: dict[int, Zone] = {}   # zoneId → Zone
         self._objects: dict[int, dict] = {}       # instanceId → raw object dict
 
+    def _reset_game_state(self) -> None:
+        """Discard all in-game state. Called on each new ConnectResp."""
+        self._our_seat = None
+        self._state = GameState()
+        self._zone_owners = {}
+        self._zone_types = {}
+        self._objects = {}
+        logger.info("New game detected — game state reset")
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -202,12 +219,20 @@ class ArenaLogParser:
 
         changed = False
         for msg in msgs:
+            # systemSeatIds on the message envelope identifies our local seat
+            sys_seats = msg.get("systemSeatIds", [])
+            if self._our_seat is None and len(sys_seats) == 1:
+                self._our_seat = sys_seats[0]
+                logger.info(f"Our seat ID from message envelope: {self._our_seat}")
+
             msg_type = msg.get("type", "")
             if msg_type == "GREMessageType_GameStateMessage":
                 gsm = msg.get("gameStateMessage", msg)
                 if self._apply_gsm(gsm):
                     changed = True
             elif msg_type == "GREMessageType_ConnectResp":
+                # New game — discard all state from any previous game in the lookback
+                self._reset_game_state()
                 self._handle_connect(msg)
         return changed
 
@@ -247,16 +272,11 @@ class ArenaLogParser:
         if turn_info:
             self._apply_turn(turn_info)
 
-        # Priority
-        pp = gsm.get("priorityPlayer")
-        if pp is not None:
-            self._state.has_priority = (pp.get("seatId") == self._our_seat)
-
-        # Available actions (Arena tells us exactly what we can do)
+        # Available actions — each entry is {"seatId": N, "action": {"actionType": ...}}
         actions = gsm.get("actions", [])
         if actions:
             self._state.available_action_types = [
-                a.get("actionType", "") for a in actions
+                a.get("action", {}).get("actionType", "") for a in actions
             ]
 
         self._rebuild_zones()
@@ -302,6 +322,11 @@ class ArenaLogParser:
             self._state.phase = PHASE_MAP[key]
         elif phase_str in PHASE_MAP:
             self._state.phase = PHASE_MAP[phase_str]
+
+        # priorityPlayer lives inside turnInfo in the real log
+        pp = turn_info.get("priorityPlayer")
+        if pp is not None:
+            self._state.has_priority = (pp == self._our_seat)
 
     def _handle_connect(self, msg: dict) -> None:
         """Extract our seat ID from a ConnectResp."""

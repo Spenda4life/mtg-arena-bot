@@ -45,6 +45,7 @@ class DecisionEngine:
         self._attackers_declared: set[int] = set()  # tracks which creatures clicked
         self._last_phase = Phase.UNKNOWN
         self._pending_target: str | None = None  # spell waiting for a target
+        self._discard_selected: bool = False  # card was clicked for discard, Space next
 
     def decide(self, state: GameState, ctx: MatchContext | None = None) -> Action | None:
         # Reset per-turn trackers when a new turn begins
@@ -53,16 +54,20 @@ class DecisionEngine:
             self._attackers_declared.clear()
         self._last_phase = state.phase
 
+        # --- Mulligan: decided from visible buttons, not the priority system ---
+        if state.keep_hand_button_visible or state.mulligan_button_visible:
+            return self._decide_opening_hand(state)
+
+        # --- Discard-to-hand-size: hand > 7 at end of turn ---
+        if len(state.we.hand) > 7:
+            return self._decide_discard(state)
+
         if not state.has_priority:
             return None
 
         # --- Targeting prompt: a spell was cast last tick and needs a target ---
         if self._pending_target:
             return self._resolve_target(state)
-
-        # --- Mulligan ---
-        if state.keep_hand_button_visible or state.mulligan_button_visible:
-            return self._decide_opening_hand(state)
 
         # --- OK button present: something needs confirming ---
         if state.ok_button_visible:
@@ -81,17 +86,47 @@ class DecisionEngine:
             case Phase.BEGINNING:
                 return Action(ActionType.KEY_SPACE, description="pass beginning")
             case Phase.ENDING:
-                return Action(ActionType.KEY_F6, description="pass turn")
+                return Action(ActionType.KEY_SPACE, description="pass turn")
             case _:
                 return Action(ActionType.KEY_SPACE, description=f"pass {state.phase.name}")
+
+    # ------------------------------------------------------------------
+    # Discard to hand size
+    # ------------------------------------------------------------------
+
+    def _decide_discard(self, state: GameState) -> Action | None:
+        if self._discard_selected:
+            # Card was clicked last tick; confirm with Space now
+            self._discard_selected = False
+            return Action(ActionType.KEY_SPACE, description="confirm discard")
+
+        hand = list(state.we.hand)
+        if not hand or not any(c.screen_x for c in hand):
+            # No screen positions yet — just pass and hope for auto-discard
+            return Action(ActionType.KEY_SPACE, description="discard pass")
+
+        # Prefer discarding non-land cards with highest CMC
+        non_lands = [c for c in hand if not c.is_land and c.screen_x]
+        targets = non_lands if non_lands else [c for c in hand if c.screen_x]
+        worst = max(targets, key=lambda c: c.cmc)
+
+        self._discard_selected = True
+        logger.info(f"Discarding {worst.name} (cmc={worst.cmc}) to reach 7")
+        return Action(ActionType.CLICK, worst.screen_x, worst.screen_y,
+                      description=f"discard {worst.name}")
 
     # ------------------------------------------------------------------
     # Opening hand
     # ------------------------------------------------------------------
 
-    def _decide_opening_hand(self, state: GameState) -> Action:
+    def _decide_opening_hand(self, state: GameState) -> Action | None:
         hand = state.we.hand
         total = len(hand)
+
+        # Log hasn't delivered the opening hand yet — wait another tick
+        if total == 0:
+            return None
+
         land_count = sum(1 for c in hand if c.is_land)
 
         # Keep range scales with hand size (tighter on mulligans)
@@ -145,11 +180,8 @@ class DecisionEngine:
             return Action(ActionType.CAST_SPELL, spell.screen_x, spell.screen_y,
                           description=spell.name)
 
-        # 3. Nothing to do
-        if state.phase == Phase.MAIN1:
-            # Move to combat via F4 rather than passing priority inside main1
-            return Action(ActionType.KEY_F4, description="advance to combat")
-        return Action(ActionType.KEY_F6, description="pass turn")
+        # 3. Nothing to do — pass priority with Space (F4/F6 shortcuts removed in Arena 2026)
+        return Action(ActionType.KEY_SPACE, description="pass priority")
 
     # ------------------------------------------------------------------
     # Targeting

@@ -175,6 +175,14 @@ class VisionDetector:
             "mulligan": (mull_vis, mull_pos),
         }
 
+    def detect_nav_buttons(self, frame: np.ndarray, threshold: float | None = None) -> dict:
+        t = threshold or self.threshold
+        return {
+            "nav_play":     _button_visible(frame, "nav_play.png", t),
+            "nav_submit":   _button_visible(frame, "nav_submit.png", t),
+            "nav_continue": _button_visible(frame, "nav_continue.png", t),
+        }
+
     def annotate_debug(self, frame: np.ndarray) -> np.ndarray:
         """Draw region overlays on a copy of the frame for debugging."""
         out = frame.copy()
