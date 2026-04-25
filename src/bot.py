@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from loguru import logger
 
-from src.capture.screen import ScreenCapture
+from src.capture.screen import ScreenCapture, is_arena_running
 from src.vision.detector import VisionDetector
 from src.vision.layout import CardPositionMapper
 from src.game_state.log_parser import ArenaLogParser
@@ -14,6 +14,7 @@ from src.game_state.state import GameState
 from src.engine.decision import DecisionEngine
 from src.engine.actions import Action
 from src.input.controller import InputController
+from src.navigation.navigator import NavigationEngine
 
 
 def _configure_logging(cfg: dict) -> None:
@@ -59,11 +60,28 @@ class Bot:
             action_delay=arena_cfg.get("action_delay", 0.8)
         )
 
+        self.navigator = NavigationEngine(
+            detector=self.detector,
+            capture=self.capture,
+            config=config,
+            log_parser=self.log_parser,
+        )
+
         self._state: GameState = GameState()
         self._iteration = 0
+        self._navigating = False
 
     def run(self) -> None:
         logger.info("Bot started. Press Ctrl+C to stop.")
+        self._navigating = True
+        if not self.navigator.navigate_to_game():
+            logger.error("Navigation failed — could not start a game. Check templates and Arena state.")
+            return
+        self._navigating = False
+        # If navigator consumed a log poll to detect in-game state, seed our _state.
+        if self.navigator.initial_state is not None:
+            self._state = self.navigator.initial_state
+            self.navigator.initial_state = None
         try:
             while True:
                 self._tick()
@@ -72,6 +90,10 @@ class Bot:
             logger.info("Bot stopped.")
 
     def _tick(self) -> None:
+        if not is_arena_running():
+            logger.debug("Arena not running — skipping tick")
+            return
+
         self._iteration += 1
 
         # 1. Pull new game state from log
@@ -88,16 +110,33 @@ class Bot:
                 annotated, f"{self.debug_dir}/frame_{self._iteration:06d}.png"
             )
         buttons = self.detector.detect_buttons(frame)
-        self._state.pass_button_visible,    self._state.pass_button_pos    = buttons["pass"]
-        self._state.ok_button_visible,      self._state.ok_button_pos      = buttons["ok"]
+        self._state.pass_button_visible,      self._state.pass_button_pos      = buttons["pass"]
         self._state.keep_hand_button_visible, self._state.keep_hand_button_pos = buttons["keep_hand"]
         self._state.mulligan_button_visible,  self._state.mulligan_button_pos  = buttons["mulligan"]
+
+        # ok_button: use vision if template exists; otherwise infer from log state.
+        # Spacebar is Arena's default action, so pressing it when priority is held
+        # and the phase is unknown (pre-game prompts, triggered-ability windows) is safe.
+        ok_vis, ok_pos = buttons["ok"]
+        if not ok_vis and self._state.has_priority and self._state.phase.name == "UNKNOWN":
+            ok_vis = True
+        self._state.ok_button_visible = ok_vis
+        self._state.ok_button_pos     = ok_pos
 
         # 3. Update match lifecycle
         ctx = self.match_fsm.update(self._state)
 
         # 4. Don't act while idle/searching — wait for a game
-        if ctx.status in (MatchStatus.IDLE, MatchStatus.SEARCHING, MatchStatus.GAME_OVER):
+        if ctx.status in (MatchStatus.IDLE, MatchStatus.SEARCHING):
+            return
+
+        if ctx.status == MatchStatus.GAME_OVER and not self._navigating:
+            self._navigating = True
+            self.navigator.handle_game_over()
+            if not self.navigator.navigate_to_game():
+                logger.error("Re-navigation failed — stopping bot loop")
+                raise KeyboardInterrupt
+            self._navigating = False
             return
 
         # 5. Decide and act

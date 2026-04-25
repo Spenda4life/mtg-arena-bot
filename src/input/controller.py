@@ -1,11 +1,54 @@
 from __future__ import annotations
+import ctypes
 import time
 import pyautogui
 from loguru import logger
 from src.engine.actions import Action, ActionType, KEYBOARD_ACTIONS
+from src.capture.screen import focus_arena
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.03
+
+_user32 = ctypes.windll.user32
+_SCREEN_W: int = _user32.GetSystemMetrics(0)
+_SCREEN_H: int = _user32.GetSystemMetrics(1)
+
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP   = 0x0004
+_MOUSEEVENTF_ABSOLUTE = 0x8000
+_KEYEVENTF_KEYUP      = 0x0002
+
+# Virtual key codes for Arena keyboard shortcuts
+_VK_MAP = {
+    "space":  0x20,
+    "f4":     0x73,
+    "f6":     0x75,
+    "escape": 0x1B,
+    "enter":  0x0D,
+}
+
+
+def _arena_click(x: int, y: int) -> None:
+    """Send a mouse click to Arena via mouse_event (pyautogui.click is blocked by Unity)."""
+    nx = int(x * 65535 / _SCREEN_W)
+    ny = int(y * 65535 / _SCREEN_H)
+    _user32.SetCursorPos(x, y)
+    time.sleep(0.05)
+    _user32.mouse_event(_MOUSEEVENTF_LEFTDOWN | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
+    time.sleep(0.05)
+    _user32.mouse_event(_MOUSEEVENTF_LEFTUP   | _MOUSEEVENTF_ABSOLUTE, nx, ny, 0, 0)
+
+
+def _arena_key(key: str) -> None:
+    """Send a keypress to Arena via keybd_event (pyautogui.press is blocked by Unity)."""
+    vk = _VK_MAP.get(key)
+    if vk is None:
+        logger.warning(f"No VK code for key '{key}'")
+        return
+    _user32.keybd_event(vk, 0, 0, 0)
+    time.sleep(0.05)
+    _user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
+
 
 # Arena keyboard shortcuts
 _KEY_MAP = {
@@ -26,6 +69,9 @@ class InputController:
         self.click_duration = click_duration
 
     def execute(self, action: Action) -> None:
+        if not focus_arena():
+            logger.warning(f"Arena not running — skipping action {action.type.name}")
+            return
         logger.info(f">> {action}")
 
         match action.type:
@@ -33,8 +79,11 @@ class InputController:
             case t if t in _KEY_MAP:
                 self._press(_KEY_MAP[t])
 
-            # --- Targeted clicks ---
-            case ActionType.PLAY_LAND | ActionType.CAST_SPELL | ActionType.CLICK:
+            # --- Card plays: double-click to cast/play (single click only selects) ---
+            case ActionType.PLAY_LAND | ActionType.CAST_SPELL:
+                self._double_click(action.target_x, action.target_y)
+
+            case ActionType.CLICK:
                 self._click(action.target_x, action.target_y)
 
             case ActionType.CLICK_TARGET:
@@ -61,13 +110,31 @@ class InputController:
         time.sleep(self.action_delay)
 
     def _press(self, key: str) -> None:
-        pyautogui.press(key)
+        if not focus_arena():
+            logger.warning(f"Arena not focused — aborting keypress '{key}'")
+            return
+        time.sleep(0.15)
+        _arena_key(key)
         logger.debug(f"keypress: {key}")
 
     def _click(self, x: int | None, y: int | None) -> None:
         if x is None or y is None:
             logger.warning("Click with no coordinates — skipping")
             return
-        pyautogui.moveTo(x, y, duration=self.click_duration)
-        pyautogui.click()
+        if not focus_arena():
+            logger.warning(f"Arena not focused — aborting click ({x}, {y})")
+            return
+        _arena_click(x, y)
         logger.debug(f"click: ({x}, {y})")
+
+    def _double_click(self, x: int | None, y: int | None) -> None:
+        if x is None or y is None:
+            logger.warning("Double-click with no coordinates — skipping")
+            return
+        if not focus_arena():
+            logger.warning(f"Arena not focused — aborting double-click ({x}, {y})")
+            return
+        _arena_click(x, y)
+        time.sleep(0.08)
+        _arena_click(x, y)
+        logger.debug(f"double-click: ({x}, {y})")
