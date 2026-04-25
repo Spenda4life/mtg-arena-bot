@@ -91,9 +91,17 @@ class NavigationEngine:
         if self._log_parser is not None:
             state = self._log_parser.poll()
             if state is not None and state.phase.name != "UNKNOWN":
-                logger.info(f"[Nav] Already in a game (phase={state.phase.name}) — skipping navigation")
-                self.initial_state = state
-                return True
+                # Sanity check: if the home Play button is visible we're NOT in a game
+                # (log state can be stale from a finished game)
+                check_frame = self.capture.grab()
+                home_visible = self.detector.detect_nav_buttons(check_frame).get(
+                    "nav_play", (False, None)
+                )[0]
+                if not home_visible:
+                    logger.info(f"[Nav] Already in a game (phase={state.phase.name}) — skipping navigation")
+                    self.initial_state = state
+                    return True
+                logger.info("[Nav] Log shows in-game but home screen detected — navigating")
 
         logger.info("[Nav] Navigating to Bot Match via Recently Played")
 
@@ -120,16 +128,13 @@ class NavigationEngine:
         return self._wait_for_game_start()
 
     def handle_game_over(self) -> None:
-        """Handle end-of-game: dismiss result screen and return to home."""
-        logger.info("[Nav] Game over — dismissing result screen")
+        """Dismiss the end-of-game result screen (always a 'click to continue')."""
+        logger.info("[Nav] Game over — clicking to continue")
         time.sleep(3.0)
-        # Try the Continue button template; fall back to pressing Space/Escape
-        if not self._click_template("nav_continue", "Continue button", required=False):
-            logger.info("[Nav] No Continue button found — pressing Escape to dismiss")
-            vk_escape = 0x1B
-            _user32.keybd_event(vk_escape, 0, 0, 0)
-            time.sleep(0.05)
-            _user32.keybd_event(vk_escape, 0, 0x0002, 0)
+        frame = self.capture.grab()
+        h, w = frame.shape[:2]
+        # Click the center of the screen to dismiss the result overlay
+        _safe_click(w // 2, h // 2)
         time.sleep(self.click_delay)
 
     # ------------------------------------------------------------------

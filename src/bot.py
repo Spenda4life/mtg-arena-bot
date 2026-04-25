@@ -114,6 +114,13 @@ class Bot:
         self._state.keep_hand_button_visible, self._state.keep_hand_button_pos = buttons["keep_hand"]
         self._state.mulligan_button_visible,  self._state.mulligan_button_pos  = buttons["mulligan"]
 
+        # Detect which hand cards have Arena's blue "playable" outline
+        self._state.playable_hand_positions = self.detector.detect_playable_hand_cards(frame)
+
+        # Detect discard-to-hand-size prompt
+        self._state.discard_prompt_visible, self._state.discard_submit_pos = \
+            self.detector.detect_discard_state(frame)
+
         # ok_button: use vision if template exists; otherwise infer from log state.
         # Spacebar is Arena's default action, so pressing it when priority is held
         # and the phase is unknown (pre-game prompts, triggered-ability windows) is safe.

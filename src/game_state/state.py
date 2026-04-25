@@ -111,3 +111,8 @@ class GameState:
     available_action_types: list[str] = field(default_factory=list)
     # Pixel position of the opponent avatar/life total (for targeting face)
     opponent_player_pos: Optional[tuple[int, int]] = None
+    # Centers of hand cards that have a blue "playable" outline, sorted left-to-right
+    playable_hand_positions: list[tuple[int, int]] = field(default_factory=list)
+    # Discard-to-hand-size prompt
+    discard_prompt_visible: bool = False
+    discard_submit_pos: Optional[tuple[int, int]] = None

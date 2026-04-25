@@ -58,8 +58,8 @@ class DecisionEngine:
         if state.keep_hand_button_visible or state.mulligan_button_visible:
             return self._decide_opening_hand(state)
 
-        # --- Discard-to-hand-size: hand > 7 at end of turn ---
-        if len(state.we.hand) > 7:
+        # --- Discard-to-hand-size: triggered by visual prompt, not hand count ---
+        if state.discard_prompt_visible:
             return self._decide_discard(state)
 
         if not state.has_priority:
@@ -96,24 +96,42 @@ class DecisionEngine:
 
     def _decide_discard(self, state: GameState) -> Action | None:
         if self._discard_selected:
-            # Card was clicked last tick; confirm with Space now
+            # Card was clicked last tick — now click the Submit button to confirm
             self._discard_selected = False
-            return Action(ActionType.KEY_SPACE, description="confirm discard")
+            sx, sy = state.discard_submit_pos or (None, None)
+            if sx is None:
+                return Action(ActionType.KEY_SPACE, description="confirm discard fallback")
+            logger.info(f"Submitting discard at ({sx},{sy})")
+            return Action(ActionType.CLICK, sx, sy, description="submit discard")
 
+        # Use blue-outline positions to find actual card locations; fall back to
+        # CardPositionMapper estimates if vision data is unavailable.
+        playable = state.playable_hand_positions
         hand = list(state.we.hand)
-        if not hand or not any(c.screen_x for c in hand):
-            # No screen positions yet — just pass and hope for auto-discard
-            return Action(ActionType.KEY_SPACE, description="discard pass")
 
-        # Prefer discarding non-land cards with highest CMC
-        non_lands = [c for c in hand if not c.is_land and c.screen_x]
-        targets = non_lands if non_lands else [c for c in hand if c.screen_x]
-        worst = max(targets, key=lambda c: c.cmc)
+        candidates = []
+        for card in hand:
+            if card.screen_x is None:
+                continue
+            if playable:
+                dists = [(abs(px - card.screen_x), px, py) for px, py in playable]
+                dist, px, py = min(dists)
+                cx, cy = (px, py) if dist < 100 else (card.screen_x, card.screen_y)
+            else:
+                cx, cy = card.screen_x, card.screen_y
+            candidates.append((card, cx, cy))
+
+        if not candidates:
+            return Action(ActionType.KEY_SPACE, description="discard: no positions yet")
+
+        # Discard highest-CMC non-land; if all lands, discard highest-CMC land
+        non_lands = [(c, cx, cy) for c, cx, cy in candidates if not c.is_land]
+        pool = non_lands if non_lands else candidates
+        worst, cx, cy = max(pool, key=lambda t: t[0].cmc)
 
         self._discard_selected = True
-        logger.info(f"Discarding {worst.name} (cmc={worst.cmc}) to reach 7")
-        return Action(ActionType.CLICK, worst.screen_x, worst.screen_y,
-                      description=f"discard {worst.name}")
+        logger.info(f"Selecting {worst.name} (cmc={worst.cmc}) for discard at ({cx},{cy})")
+        return Action(ActionType.CLICK, cx, cy, description=f"discard select {worst.name}")
 
     # ------------------------------------------------------------------
     # Opening hand
@@ -149,38 +167,55 @@ class DecisionEngine:
     # ------------------------------------------------------------------
 
     def _decide_main_phase(self, state: GameState) -> Action:
-        mana = state.we.total_mana_available
         hand = state.we.hand
-        bf = state.we.battlefield
+        playable = state.playable_hand_positions  # blue-outlined card centers, left-to-right
 
-        # 1. Play a land (once per turn, prefer untapped producers)
+        def click_pos(card) -> tuple[int | None, int | None]:
+            """Return the best click position for a card.
+
+            Prefer the vision-detected blue-outline center (exact screen position).
+            Fall back to the CardPositionMapper estimate if vision has no data.
+            """
+            if not playable or card.screen_x is None:
+                return card.screen_x, card.screen_y
+            dists = [(abs(px - card.screen_x), px, py) for px, py in playable]
+            min_dist, px, py = min(dists)
+            # Within 100px → treat the detected position as this card's center
+            return (px, py) if min_dist < 100 else (card.screen_x, card.screen_y)
+
+        def is_playable(card) -> bool:
+            """True if Arena shows a blue outline on this card."""
+            if not playable or card.screen_x is None:
+                # No vision data — fall back to mana check
+                return not card.is_land and card.cmc <= state.we.total_mana_available
+            dists = [abs(px - card.screen_x) for px, _ in playable]
+            return min(dists) < 100
+
+        # 1. Play a land (once per turn, first blue-outlined land found)
         if not self._land_played_this_turn:
-            land = next((c for c in hand if c.is_land and c.screen_x), None)
+            land = next((c for c in hand if c.is_land and is_playable(c)), None)
             if land:
                 self._land_played_this_turn = True
-                logger.info(f"Playing land: {land.name}")
-                return Action(ActionType.PLAY_LAND, land.screen_x, land.screen_y,
-                              description=land.name)
+                cx, cy = click_pos(land)
+                logger.info(f"Playing land: {land.name} at ({cx},{cy})")
+                return Action(ActionType.PLAY_LAND, cx, cy, description=land.name)
 
-        # 2. Cast highest-CMC spell we can afford (non-land, fits in mana)
+        # 2. Cast highest-CMC blue-outlined spell
         castable = sorted(
-            (c for c in hand if not c.is_land and c.cmc <= mana and c.screen_x),
+            (c for c in hand if not c.is_land and is_playable(c)),
             key=lambda c: c.cmc, reverse=True,
         )
         if castable:
             spell = castable[0]
             name_lower = spell.name.lower()
-            logger.info(f"Casting {spell.name} (cmc={spell.cmc})")
-
-            # If this spell needs a target, remember it for the next tick
+            cx, cy = click_pos(spell)
+            logger.info(f"Casting {spell.name} (cmc={spell.cmc}) at ({cx},{cy})")
             if name_lower in _TARGETED_SPELLS:
                 self._pending_target = spell.name
-                logger.info(f"  → will need to target next")
+                logger.info(f"  -> will need to target next")
+            return Action(ActionType.CAST_SPELL, cx, cy, description=spell.name)
 
-            return Action(ActionType.CAST_SPELL, spell.screen_x, spell.screen_y,
-                          description=spell.name)
-
-        # 3. Nothing to do — pass priority with Space (F4/F6 shortcuts removed in Arena 2026)
+        # 3. Nothing to do — pass priority
         return Action(ActionType.KEY_SPACE, description="pass priority")
 
     # ------------------------------------------------------------------

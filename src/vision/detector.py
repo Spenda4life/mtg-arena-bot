@@ -175,6 +175,57 @@ class VisionDetector:
             "mulligan": (mull_vis, mull_pos),
         }
 
+    def detect_discard_state(self, frame: np.ndarray) -> tuple[bool, tuple[int, int] | None]:
+        """Return (prompt_visible, submit_button_pos).
+
+        Detects the 'Discard a card.' overlay.  The Submit button changes text
+        (0→1) after a card is selected, so we use a fixed fractional position
+        rather than template-matching the button itself.
+        """
+        h, w = frame.shape[:2]
+        visible, _ = _button_visible(frame, "btn_discard_prompt.png", self.threshold)
+        if not visible:
+            return False, None
+        # Submit button is at a fixed position calibrated for 1920x1080
+        submit_pos = (int(1812 * w / 1920), int(951 * h / 1080))
+        return True, submit_pos
+
+    def detect_playable_hand_cards(self, frame: np.ndarray) -> list[tuple[int, int]]:
+        """Return (x, y) screen centers of hand cards with Arena's blue 'playable' outline.
+
+        Arena highlights eligible-to-play cards with a cyan/teal border.  We isolate
+        that hue, lightly dilate to merge the outline fragments into solid blobs, then
+        return each blob's center sorted left-to-right (matching hand array order).
+        """
+        h, w = frame.shape[:2]
+        x0, y0 = int(0.08 * w), int(0.78 * h)
+        hand_region = frame[y0:h, x0:int(0.92 * w)]
+
+        hsv = cv2.cvtColor(hand_region, cv2.COLOR_BGR2HSV)
+        # Cyan/teal hue range that Arena uses for the playable-card highlight
+        mask = cv2.inRange(hsv,
+                           np.array([80, 120, 120], dtype=np.uint8),
+                           np.array([110, 255, 255], dtype=np.uint8))
+
+        # Small dilation connects outline fragments; keeps adjacent-card gaps open
+        kernel = np.ones((7, 7), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        centers: list[tuple[int, int]] = []
+        for cnt in contours:
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            if cw * ch < 2000 or cw < 25 or ch < 20:
+                continue
+            cx = x + cw // 2 + x0
+            cy = y + ch // 2 + y0
+            centers.append((cx, cy))
+
+        centers.sort(key=lambda p: p[0])
+        logger.debug(f"Playable hand cards detected: {len(centers)} at {centers}")
+        return centers
+
     def detect_nav_buttons(self, frame: np.ndarray, threshold: float | None = None) -> dict:
         t = threshold or self.threshold
         return {
