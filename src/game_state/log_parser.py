@@ -2,13 +2,24 @@ from __future__ import annotations
 import json
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 from loguru import logger
 
 from src.game_state.state import GameState, PlayerState, CardObject, Phase, Zone
 from src.game_state.grp_db import GrpDatabase
+
+
 from src.vision.layout import CardPositionMapper
+
+
+@dataclass
+class DeckInfo:
+    id: str
+    name: str
+    main: list[CardObject]       # full list with duplicates (60 cards for a 60-card deck)
+    sideboard: list[CardObject] = field(default_factory=list)
 
 # Default log location on Windows
 LOG_PATH = Path.home() / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
@@ -35,6 +46,8 @@ ZONE_MAP: dict[str, Zone] = {
 
 # Log lines that precede a GRE JSON blob
 _GRE_HEADER = re.compile(r"==> Message\.GRE:|<== Message\.GRE:|GreToClientEvent|greToClientEvent")
+# Log line that precedes the StartHook payload (contains player decks + inventory)
+_DECK_INVENTORY_HEADER = re.compile(r"<== StartHook\(")
 
 
 class LogTailer:
@@ -135,6 +148,8 @@ class ArenaLogParser:
         self.layout = layout  # assigned by Bot after screen size is known
         self._our_seat: int | None = None
         self._state = GameState()
+        self.decks: dict[str, DeckInfo] = {}        # deckId → DeckInfo
+        self._next_is_deck_inventory = False
 
         # Internal indexes rebuilt each GSM
         self._zone_owners: dict[int, int] = {}   # zoneId → seatId
@@ -152,8 +167,13 @@ class ArenaLogParser:
         """
         changed = False
         for line in self.tailer.lines():
+            if _DECK_INVENTORY_HEADER.search(line):
+                self._next_is_deck_inventory = True
             for payload in self.extractor.feed(line):
-                if self._handle_payload(payload):
+                if self._next_is_deck_inventory:
+                    self._next_is_deck_inventory = False
+                    self._handle_deck_inventory(payload)
+                elif self._handle_payload(payload):
                     changed = True
         return self._state if changed else None
 
@@ -289,6 +309,57 @@ class ArenaLogParser:
         if seat and self._our_seat is None:
             self._our_seat = seat
             logger.info(f"Seat ID from ConnectResp: {seat}")
+
+    # ------------------------------------------------------------------
+    # Deck inventory
+    # ------------------------------------------------------------------
+
+    def _handle_deck_inventory(self, payload: dict) -> None:
+        # StartHook payload shape:
+        #   "DeckSummaries": [{"DeckId": "uuid", "Name": "...", ...}, ...]
+        #   "Decks": {"uuid": {"MainDeck": [{"cardId": N, "quantity": N}, ...],
+        #                      "Sideboard": [...]}, ...}
+        if not isinstance(payload, dict):
+            return
+
+        summaries = {s["DeckId"]: s["Name"]
+                     for s in payload.get("DeckSummaries", [])
+                     if "DeckId" in s}
+
+        decks_data = payload.get("Decks", {})
+        if not isinstance(decks_data, dict):
+            logger.debug("Deck inventory payload had unexpected shape, skipping")
+            return
+
+        for deck_id, deck in decks_data.items():
+            name = summaries.get(deck_id, deck_id)
+            main_cards = [
+                card
+                for entry in deck.get("MainDeck", [])
+                for card in [self._grp_to_card(entry["cardId"])] * entry.get("quantity", 1)
+            ]
+            side_cards = [
+                card
+                for entry in deck.get("Sideboard", [])
+                for card in [self._grp_to_card(entry["cardId"])] * entry.get("quantity", 1)
+            ]
+            self.decks[deck_id] = DeckInfo(id=deck_id, name=name,
+                                           main=main_cards, sideboard=side_cards)
+        logger.info(f"Loaded {len(self.decks)} deck(s) from inventory")
+
+    def _grp_to_card(self, grp_id: int) -> CardObject:
+        db = self.grp_db.get(grp_id)
+        return CardObject(
+            name=db.get("name") or f"card_{grp_id}",
+            zone=Zone.LIBRARY,
+            cmc=db.get("cmc", 0),
+            power=db.get("power"),
+            toughness=db.get("toughness"),
+            card_type=db.get("type", ""),
+            color=db.get("color", ""),
+            keywords=db.get("keywords", []),
+            produces_mana=db.get("produces", []),
+        )
 
     # ------------------------------------------------------------------
     # Zone rebuild

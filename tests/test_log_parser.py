@@ -1,6 +1,6 @@
 import json
 import pytest
-from src.game_state.log_parser import ArenaLogParser, JsonStreamExtractor
+from src.game_state.log_parser import ArenaLogParser, JsonStreamExtractor, DeckInfo
 from src.game_state.grp_db import GrpDatabase
 from src.game_state.state import Phase, Zone
 
@@ -70,13 +70,16 @@ def _feed_payload(parser: ArenaLogParser, payload: dict) -> None:
         parser._handle_payload(obj)
 
 
-def _make_parser() -> ArenaLogParser:
+def _make_parser(grp_db_entries: dict | None = None) -> ArenaLogParser:
     grp_db = GrpDatabase.__new__(GrpDatabase)
-    grp_db._db = {}
+    grp_db._db = grp_db_entries or {}
     parser = ArenaLogParser.__new__(ArenaLogParser)
     parser.extractor = JsonStreamExtractor()
     parser.grp_db = grp_db
+    parser.layout = None
     parser._our_seat = None
+    parser.decks = {}
+    parser._next_is_deck_inventory = False
     from src.game_state.state import GameState
     parser._state = GameState()
     parser._zone_owners = {}
@@ -152,3 +155,94 @@ def test_json_stream_extractor_multiple_objects():
     assert len(results) == 2
     assert results[0] == {"a": 1}
     assert results[1] == {"b": 2}
+
+
+# ---------------------------------------------------------------------------
+# Deck inventory tests
+# ---------------------------------------------------------------------------
+
+# Two fake grpIds with known metadata
+_FAKE_GRP_DB = {
+    11111: {"name": "Lightning Strike", "cmc": 2, "type": "instant", "color": "R",
+            "keywords": [], "produces": [], "power": None, "toughness": None},
+    22222: {"name": "Mountain", "cmc": 0, "type": "basic land", "color": "R",
+            "keywords": [], "produces": ["R"], "power": None, "toughness": None},
+}
+
+_DECK_INVENTORY_PAYLOAD = {
+    "DeckSummaries": [
+        {"DeckId": "aaaaaaaa-0000-0000-0000-000000000001", "Name": "Mono Red Burn"},
+        {"DeckId": "aaaaaaaa-0000-0000-0000-000000000002", "Name": "Empty Deck"},
+    ],
+    "Decks": {
+        "aaaaaaaa-0000-0000-0000-000000000001": {
+            "MainDeck": [
+                {"cardId": 11111, "quantity": 4},
+                {"cardId": 22222, "quantity": 6},
+            ],
+            "Sideboard": [],
+        },
+        "aaaaaaaa-0000-0000-0000-000000000002": {
+            "MainDeck": [],
+            "Sideboard": [],
+        },
+    },
+}
+
+
+def test_deck_inventory_loads_two_decks():
+    parser = _make_parser(_FAKE_GRP_DB)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    assert len(parser.decks) == 2
+
+
+def test_deck_inventory_names():
+    parser = _make_parser(_FAKE_GRP_DB)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    names = {d.name for d in parser.decks.values()}
+    assert names == {"Mono Red Burn", "Empty Deck"}
+
+
+def test_deck_inventory_card_count():
+    parser = _make_parser(_FAKE_GRP_DB)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    deck = parser.decks["aaaaaaaa-0000-0000-0000-000000000001"]
+    assert len(deck.main) == 10
+
+
+def test_deck_inventory_card_names():
+    parser = _make_parser(_FAKE_GRP_DB)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    deck = parser.decks["aaaaaaaa-0000-0000-0000-000000000001"]
+    names = [c.name for c in deck.main]
+    assert names.count("Lightning Strike") == 4
+    assert names.count("Mountain") == 6
+
+
+def test_deck_inventory_card_metadata():
+    parser = _make_parser(_FAKE_GRP_DB)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    deck = parser.decks["aaaaaaaa-0000-0000-0000-000000000001"]
+    strike = next(c for c in deck.main if c.name == "Lightning Strike")
+    assert strike.cmc == 2
+    mountain = next(c for c in deck.main if c.name == "Mountain")
+    assert mountain.is_land is True
+    assert "R" in mountain.produces_mana
+
+
+def test_deck_inventory_unknown_grp_falls_back():
+    """GrpIds not in the database should produce a placeholder name, not crash."""
+    parser = _make_parser({})  # empty db
+    parser._handle_deck_inventory({
+        "DeckSummaries": [{"DeckId": "x", "Name": "Mystery"}],
+        "Decks": {"x": {"MainDeck": [{"cardId": 99999, "quantity": 1}], "Sideboard": []}},
+    })
+    assert parser.decks["x"].main[0].name == "card_99999"
+
+
+def test_deck_inventory_idempotent_reload():
+    """Calling _handle_deck_inventory twice should replace, not duplicate."""
+    parser = _make_parser(_FAKE_GRP_DB)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    parser._handle_deck_inventory(_DECK_INVENTORY_PAYLOAD)
+    assert len(parser.decks) == 2

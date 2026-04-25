@@ -1,11 +1,17 @@
 from __future__ import annotations
 import json
-import glob
+import sqlite3
 from pathlib import Path
 from loguru import logger
 
-# Arena stores its card data in a versioned file under its installation directory.
-# We search for the most recently modified one.
+# Arena stores its SQLite card database under the Raw downloads directory.
+_ARENA_RAW_DIRS = [
+    Path("C:/Program Files (x86)/Wizards of the Coast/MTGA/MTGA_Data/Downloads/Raw"),
+    Path("C:/Program Files/Wizards of the Coast/MTGA/MTGA_Data/Downloads/Raw"),
+]
+_CARD_DB_GLOB = "Raw_CardDatabase_*.mtga"
+
+# Legacy JSON card file (older Arena versions)
 _ARENA_DATA_DIRS = [
     Path("C:/Program Files (x86)/Wizards of the Coast/MTGA/MTGA_Data/Downloads/Data"),
     Path("C:/Program Files/Wizards of the Coast/MTGA/MTGA_Data/Downloads/Data"),
@@ -16,12 +22,40 @@ _CARD_FILE_GLOB = "data_cards_*.mtga"
 _SCRYFALL_FALLBACK = Path("data/scryfall_cards.json")
 
 
+def _find_arena_sqlite_db() -> Path | None:
+    for raw_dir in _ARENA_RAW_DIRS:
+        matches = sorted(raw_dir.glob(_CARD_DB_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
+        if matches:
+            return matches[0]
+    return None
+
+
 def _find_arena_card_file() -> Path | None:
     for data_dir in _ARENA_DATA_DIRS:
         matches = sorted(data_dir.glob(_CARD_FILE_GLOB), key=lambda p: p.stat().st_mtime, reverse=True)
         if matches:
             return matches[0]
     return None
+
+
+def _load_arena_sqlite(path: Path) -> dict[int, dict]:
+    """Load card names from Arena's Raw_CardDatabase_*.mtga SQLite file."""
+    db: dict[int, dict] = {}
+    try:
+        con = sqlite3.connect(str(path))
+        rows = con.execute("""
+            SELECT c.GrpId, l.Loc
+            FROM Cards c
+            JOIN Localizations_enUS l ON c.TitleId = l.LocId
+            WHERE l.Loc IS NOT NULL
+        """).fetchall()
+        con.close()
+        for grp_id, name in rows:
+            db[grp_id] = {"grpId": grp_id, "name": name}
+        logger.info(f"Loaded {len(db)} card names from Arena SQLite DB: {path.name}")
+    except Exception as e:
+        logger.warning(f"Failed to load Arena SQLite card DB: {e}")
+    return db
 
 
 def _load_arena_cards(path: Path) -> dict[int, dict]:
@@ -108,6 +142,11 @@ class GrpDatabase:
     def _load(self, custom_path: Path | None) -> None:
         if custom_path and custom_path.exists():
             self._db = _load_arena_cards(custom_path)
+            return
+
+        sqlite_db = _find_arena_sqlite_db()
+        if sqlite_db:
+            self._db = _load_arena_sqlite(sqlite_db)
             return
 
         arena_file = _find_arena_card_file()

@@ -1,4 +1,11 @@
 arena:
+  # Full path to MTGA.exe
+  exe_path: "C:/Program Files/Wizards of the Coast/MTGA/MTGA.exe"
+  # If true, the bot launches Arena on startup and kills it on exit.
+  # Set to true for scheduled / unattended runs.
+  manage_lifecycle: false
+  # Seconds to wait for Arena to reach the home screen after launching
+  startup_timeout: 120
   # Window title to search for (partial match)
   window_title: "MTGA"
   # Target resolution the bot was calibrated against
