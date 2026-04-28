@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python main.py status)",
+      "Bash(python main.py launch)",
+      "Bash(python tools/snap.py)",
+      "Bash(python tools/extract_template.py nav_play 1710 1015 200 55)",
+      "Bash(python tools/extract_template.py nav_play 1680 1010 240 60)",
+      "Bash(python -c ' *)",
+      "Bash(python *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(echo \"Bot PID: $!\")",
+      "Bash(pkill -f \"python main.py\")",
+      "Bash(taskkill /F /IM python.exe /T)"
+    ]
+  }
+}

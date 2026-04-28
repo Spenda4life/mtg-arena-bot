@@ -183,7 +183,11 @@ class VisionDetector:
         rather than template-matching the button itself.
         """
         h, w = frame.shape[:2]
-        visible, _ = _button_visible(frame, "btn_discard_prompt.png", self.threshold)
+        # Use a lower threshold — the board background changes each game but the
+        # dark text box is consistent; also fall back to the Submit button itself.
+        visible, _ = _button_visible(frame, "btn_discard_prompt.png", 0.70)
+        if not visible:
+            visible, _ = _button_visible(frame, "btn_discard_submit.png", 0.75)
         if not visible:
             return False, None
         # Submit button is at a fixed position calibrated for 1920x1080

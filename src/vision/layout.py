@@ -40,7 +40,7 @@ class LayoutConfig:
 
     # Opponent player (for targeting life total / player)
     opp_player_x: float = 0.5
-    opp_player_y: float = 0.06
+    opp_player_y: float = 0.10
 
     # Our player
     our_player_x: float = 0.5

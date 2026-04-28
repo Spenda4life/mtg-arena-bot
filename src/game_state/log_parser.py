@@ -449,6 +449,7 @@ class ArenaLogParser:
         return CardObject(
             name=name,
             zone=zone,
+            instance_id=obj.get("instanceId"),
             cmc=cmc,
             power=obj.get("power"),
             toughness=obj.get("toughness"),

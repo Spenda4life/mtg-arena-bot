@@ -13,6 +13,28 @@ _user32 = ctypes.windll.user32
 _SCREEN_W: int = _user32.GetSystemMetrics(0)
 _SCREEN_H: int = _user32.GetSystemMetrics(1)
 
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+# Hand region starts at ~78% of screen height (matches detector.py's y0 = 0.78 * h)
+_HAND_Y_THRESHOLD = int(0.78 * _SCREEN_H)
+_SAFE_X = _SCREEN_W // 2
+_SAFE_Y = _SCREEN_H // 3
+
+
+def park_cursor_if_over_hand() -> None:
+    """Move cursor to a neutral position if it's hovering over the hand region.
+
+    Called before each screen grab so hover effects don't obscure hand cards
+    in the captured frame. Only moves the cursor when necessary.
+    """
+    pt = _POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))
+    if pt.y >= _HAND_Y_THRESHOLD:
+        _user32.SetCursorPos(_SAFE_X, _SAFE_Y)
+
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP   = 0x0004
 _MOUSEEVENTF_ABSOLUTE = 0x8000

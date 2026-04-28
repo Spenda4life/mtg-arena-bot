@@ -30,6 +30,7 @@ class Zone(Enum):
 class CardObject:
     name: str
     zone: Zone
+    instance_id: Optional[int] = None
     cmc: int = 0
     power: Optional[int] = None
     toughness: Optional[int] = None

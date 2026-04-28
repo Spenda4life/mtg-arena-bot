@@ -1,28 +1,53 @@
 from __future__ import annotations
+import time
 from loguru import logger
 
 from src.game_state.state import GameState, Phase, CardObject
 from src.game_state.match import MatchContext, MatchStatus
 from src.engine.actions import Action, ActionType
 
-# Spells that need a target immediately after being cast
+# Spells that need a target immediately after being cast.
+# Boros Charm is intentionally excluded — it's modal and Arena handles its
+# mode selection popup before targeting; the bot casts it non-targeted for now.
 _TARGETED_SPELLS = {
-    "lightning strike", "shock", "play with fire", "strangle",
-    "turn into a pumpkin", "destroy evil", "negate", "make disappear",
+    # Boros Burn deck — any-target burn
+    "shock", "play with fire", "burst lightning", "lightning helix", "fire magic",
+    # Generic removal kept for future decks
+    "lightning strike", "strangle", "skullcrack", "wizard's lightning",
     "cut down", "go for the throat", "murder", "infernal grasp",
-    "fateful absence", "borrowed time",
+    "fateful absence", "borrowed time", "destroy evil", "turn into a pumpkin",
+    "negate", "make disappear",
 }
 
-# Spells that hit "any target" (creature or player)
+# Spells that hit any target (creature or player) — bot prefers going face
 _ANY_TARGET_SPELLS = {
-    "lightning strike", "shock", "play with fire", "strangle",
+    "shock", "play with fire", "burst lightning", "lightning helix", "fire magic",
+    "lightning strike", "strangle", "skullcrack", "wizard's lightning",
 }
 
-# Spells that only target creatures
+# Spells that only hit creatures
 _CREATURE_TARGET_SPELLS = {
     "cut down", "go for the throat", "murder", "infernal grasp",
-    "destroy evil", "turn into a pumpkin",
+    "fateful absence", "borrowed time", "destroy evil", "turn into a pumpkin",
+    "negate", "make disappear",
 }
+
+# Damage dealt by each any-target spell (used for lethal-face calculation)
+_SPELL_DAMAGE: dict[str, int] = {
+    "shock": 2,
+    "play with fire": 2,
+    "burst lightning": 2,
+    "lightning helix": 3,
+    "fire magic": 1,
+    "lightning strike": 3,
+    "strangle": 3,
+    "skullcrack": 3,
+    "wizard's lightning": 3,
+}
+
+
+def _spell_damage(name: str) -> int:
+    return _SPELL_DAMAGE.get(name, 2)
 
 
 class DecisionEngine:
@@ -44,14 +69,29 @@ class DecisionEngine:
         self._land_played_this_turn = False
         self._attackers_declared: set[int] = set()  # tracks which creatures clicked
         self._last_phase = Phase.UNKNOWN
-        self._pending_target: str | None = None  # spell waiting for a target
+        self._last_turn = -1
+        self._pending_target: str | None = None  # spell name waiting for a target click
+        self._targeting_clicked_at: float = 0.0  # when we last fired a CLICK_TARGET
         self._discard_selected: bool = False  # card was clicked for discard, Space next
+        self._pending_play: dict | None = None  # land/spell awaiting log confirmation
+
+    @property
+    def pending_description(self) -> str:
+        if self._pending_target:
+            elapsed = time.time() - self._targeting_clicked_at
+            return f"targeting: {self._pending_target} ({elapsed:.1f}s)"
+        if not self._pending_play:
+            return ""
+        p = self._pending_play
+        elapsed = time.time() - p["issued_at"]
+        return f"{p['name']} attempt {p['attempt']} ({elapsed:.1f}s)"
 
     def decide(self, state: GameState, ctx: MatchContext | None = None) -> Action | None:
         # Reset per-turn trackers when a new turn begins
         if state.phase == Phase.BEGINNING and self._last_phase == Phase.ENDING:
             self._land_played_this_turn = False
             self._attackers_declared.clear()
+            self._pending_play = None
         self._last_phase = state.phase
 
         # --- Mulligan: decided from visible buttons, not the priority system ---
@@ -65,9 +105,56 @@ class DecisionEngine:
         if not state.has_priority:
             return None
 
-        # --- Targeting prompt: a spell was cast last tick and needs a target ---
+        # --- Feedback loop: confirm the last land/spell left the hand before moving on ---
+        if self._pending_play:
+            p = self._pending_play
+            if len(state.we.hand) < p['hand_size']:
+                logger.info(f"Confirmed: {p['name']} left hand ({p['hand_size']} -> {len(state.we.hand)} cards)")
+                if p.get('needs_target'):
+                    self._pending_target = p['name'].lower()
+                    logger.info(f"  -> awaiting target for {p['name']}")
+                self._pending_play = None
+                # fall through to continue deciding this tick
+            else:
+                elapsed = time.time() - p['issued_at']
+                if elapsed < 2.0:
+                    logger.debug(f"Waiting for {p['name']} to register ({elapsed:.1f}s)...")
+                    return None
+                if p['attempt'] >= 3:
+                    logger.warning(f"Giving up on {p['name']} after {p['attempt']} attempts")
+                    self._pending_play = None
+                    # fall through
+                else:
+                    p['attempt'] += 1
+                    p['issued_at'] = time.time()
+                    logger.warning(f"Retrying {p['name']} (attempt {p['attempt']})")
+                    return Action(p['action_type'], p['cx'], p['cy'],
+                                  description=f"{p['name']} retry {p['attempt']}")
+
+        # --- Targeting: wait for the spell to land on the stack, click target, retry if needed ---
         if self._pending_target:
-            return self._resolve_target(state)
+            name = self._pending_target.lower()
+            on_stack = any(name in s.lower() for s in state.stack)
+            elapsed = time.time() - self._targeting_clicked_at
+
+            if self._targeting_clicked_at > 0 and not on_stack:
+                # Spell left the stack — resolved (or fizzled), targeting done
+                logger.info(f"  {self._pending_target} left stack — targeting complete")
+                self._pending_target = None
+                self._targeting_clicked_at = 0
+                # fall through to next decision
+            elif elapsed > 5.0:
+                # Hard timeout — something went wrong
+                logger.warning(f"  Targeting timed out for {self._pending_target}, giving up")
+                self._pending_target = None
+                self._targeting_clicked_at = 0
+                # fall through
+            elif self._targeting_clicked_at == 0 or (on_stack and elapsed >= 2.0):
+                # First attempt, or spell still on stack after 2s — (re)click target
+                return self._resolve_target(state)
+            else:
+                # Waiting for the click to register
+                return None
 
         # --- OK button present: something needs confirming ---
         if state.ok_button_visible:
@@ -186,8 +273,11 @@ class DecisionEngine:
         def is_playable(card) -> bool:
             """True if Arena shows a blue outline on this card."""
             if not playable or card.screen_x is None:
-                # No vision data — fall back to mana check
-                return not card.is_land and card.cmc <= state.we.total_mana_available
+                # No vision data: lands are always eligible (land-drop managed by
+                # _land_played_this_turn); spells need enough mana
+                if card.is_land:
+                    return True
+                return card.cmc <= state.we.total_mana_available
             dists = [abs(px - card.screen_x) for px, _ in playable]
             return min(dists) < 100
 
@@ -197,25 +287,65 @@ class DecisionEngine:
             if land:
                 self._land_played_this_turn = True
                 cx, cy = click_pos(land)
+                self._pending_play = {
+                    'name': land.name,
+                    'hand_size': len(hand),
+                    'action_type': ActionType.PLAY_LAND,
+                    'cx': cx, 'cy': cy,
+                    'attempt': 1,
+                    'issued_at': time.time(),
+                    'needs_target': False,
+                }
                 logger.info(f"Playing land: {land.name} at ({cx},{cy})")
                 return Action(ActionType.PLAY_LAND, cx, cy, description=land.name)
 
-        # 2. Cast highest-CMC blue-outlined spell
-        castable = sorted(
-            (c for c in hand if not c.is_land and is_playable(c)),
+        # 2. Cast highest-CMC non-targeted playable spell (creatures and non-creatures)
+        non_targeted = sorted(
+            (c for c in hand
+             if not c.is_land
+             and c.name.lower() not in _TARGETED_SPELLS
+             and is_playable(c)),
             key=lambda c: c.cmc, reverse=True,
         )
-        if castable:
-            spell = castable[0]
-            name_lower = spell.name.lower()
+        if non_targeted:
+            spell = non_targeted[0]
             cx, cy = click_pos(spell)
+            self._pending_play = {
+                'name': spell.name,
+                'hand_size': len(hand),
+                'action_type': ActionType.CAST_SPELL,
+                'cx': cx, 'cy': cy,
+                'attempt': 1,
+                'issued_at': time.time(),
+                'needs_target': False,
+            }
             logger.info(f"Casting {spell.name} (cmc={spell.cmc}) at ({cx},{cy})")
-            if name_lower in _TARGETED_SPELLS:
-                self._pending_target = spell.name
-                logger.info(f"  -> will need to target next")
             return Action(ActionType.CAST_SPELL, cx, cy, description=spell.name)
 
-        # 3. Nothing to do — pass priority
+        # 3. Cast highest-CMC targeted playable spell
+        targeted = sorted(
+            (c for c in hand
+             if not c.is_land
+             and c.name.lower() in _TARGETED_SPELLS
+             and is_playable(c)),
+            key=lambda c: c.cmc, reverse=True,
+        )
+        if targeted:
+            spell = targeted[0]
+            cx, cy = click_pos(spell)
+            self._pending_play = {
+                'name': spell.name,
+                'hand_size': len(hand),
+                'action_type': ActionType.CAST_SPELL,
+                'cx': cx, 'cy': cy,
+                'attempt': 1,
+                'issued_at': time.time(),
+                'needs_target': True,
+            }
+            logger.info(f"Casting targeted {spell.name} (cmc={spell.cmc}) at ({cx},{cy})")
+            return Action(ActionType.CAST_SPELL, cx, cy, description=f"{spell.name} [targeted]")
+
+        # 4. Nothing to do — pass priority
         return Action(ActionType.KEY_SPACE, description="pass priority")
 
     # ------------------------------------------------------------------
@@ -225,7 +355,8 @@ class DecisionEngine:
     def _resolve_target(self, state: GameState) -> Action:
         spell_name = self._pending_target or ""
         name_lower = spell_name.lower()
-        self._pending_target = None
+        # Don't clear _pending_target here — decide() clears it once the spell leaves the stack
+        self._targeting_clicked_at = time.time()
 
         opp_creatures = [
             c for c in state.opponent.battlefield if c.is_creature and c.screen_x
@@ -239,22 +370,37 @@ class DecisionEngine:
                           description=f"→ {target.name}")
 
         if name_lower in _ANY_TARGET_SPELLS:
-            # Prefer killing a creature; if none, go face
-            if opp_creatures:
-                target = max(opp_creatures, key=lambda c: (c.power or 0))
-                logger.info(f"  Targeting creature {target.name} with {spell_name}")
-                return Action(ActionType.CLICK_TARGET, target.screen_x, target.screen_y,
-                              description=f"→ {target.name}")
-            else:
-                # Target opponent player
-                opp_x, opp_y = state.opponent_player_pos or (None, None)
-                if opp_x:
-                    logger.info(f"  Targeting opponent face with {spell_name}")
-                    return Action(ActionType.CLICK_TARGET, opp_x, opp_y,
-                                  description="→ opponent face")
+            opp_x, opp_y = state.opponent_player_pos or (None, None)
+            damage = _spell_damage(name_lower)
 
-        # Fallback: can't resolve target, escape the prompt
+            # 1. Go face if lethal
+            if opp_x and state.opponent.life <= damage:
+                logger.info(f"  Lethal burn to face with {spell_name} ({damage} dmg, {state.opponent.life} life)")
+                return Action(ActionType.CLICK_TARGET, opp_x, opp_y,
+                              description="-> face (lethal)")
+
+            # 2. Kill a threatening creature (flying, haste, trample, deathtouch)
+            threatening = [
+                c for c in opp_creatures
+                if any(k in (c.keywords or [])
+                       for k in ("haste", "trample", "flying", "deathtouch"))
+            ]
+            if threatening:
+                target = max(threatening, key=lambda c: c.power or 0)
+                logger.info(f"  Killing threatening {target.name} with {spell_name}")
+                return Action(ActionType.CLICK_TARGET, target.screen_x, target.screen_y,
+                              description=f"-> {target.name} (threatening)")
+
+            # 3. Default: go face
+            if opp_x:
+                logger.info(f"  Burning face with {spell_name} ({damage} dmg)")
+                return Action(ActionType.CLICK_TARGET, opp_x, opp_y,
+                              description="-> face")
+
+        # Fallback: no valid target found — escape and abandon this spell
         logger.warning(f"Could not resolve target for {spell_name} — pressing Escape")
+        self._pending_target = None
+        self._targeting_clicked_at = 0
         return Action(ActionType.KEY_ESCAPE, description="escape untargetable spell")
 
     # ------------------------------------------------------------------

@@ -13,7 +13,8 @@ from src.game_state.match import MatchStateMachine, MatchStatus
 from src.game_state.state import GameState
 from src.engine.decision import DecisionEngine
 from src.engine.actions import Action
-from src.input.controller import InputController
+from src.input.controller import InputController, park_cursor_if_over_hand
+from src.overlay import Overlay, OverlayData
 from src.navigation.navigator import NavigationEngine
 
 
@@ -70,6 +71,8 @@ class Bot:
         self._state: GameState = GameState()
         self._iteration = 0
         self._navigating = False
+        self._last_action_str = ""
+        self.overlay = Overlay()
 
     def run(self) -> None:
         logger.info("Bot started. Press Ctrl+C to stop.")
@@ -102,6 +105,7 @@ class Bot:
             self._state = updated
 
         # 2. Overlay button positions from screen
+        park_cursor_if_over_hand()
         frame = self.capture.grab()
         if self.debug_screenshots:
             Path(self.debug_dir).mkdir(parents=True, exist_ok=True)
@@ -135,10 +139,12 @@ class Bot:
 
         # 4. Don't act while idle/searching — wait for a game
         if ctx.status in (MatchStatus.IDLE, MatchStatus.SEARCHING):
+            self._push_overlay("waiting for game")
             return
 
         if ctx.status == MatchStatus.GAME_OVER and not self._navigating:
             self._navigating = True
+            self._push_overlay("navigating to next game")
             self.navigator.handle_game_over()
             if not self.navigator.navigate_to_game():
                 logger.error("Re-navigation failed — stopping bot loop")
@@ -151,4 +157,21 @@ class Bot:
         if action:
             if action.type.name == "MULLIGAN":
                 self.match_fsm.record_mulligan()
+            self._last_action_str = str(action)
             self.controller.execute(action)
+
+        self._push_overlay("")
+
+    def _push_overlay(self, status: str) -> None:
+        s = self._state
+        self.overlay.update(OverlayData(
+            status=status,
+            phase=s.phase.name,
+            has_priority=s.has_priority,
+            our_life=s.we.life,
+            opp_life=s.opponent.life,
+            hand_count=len(s.we.hand),
+            playable_count=len(s.playable_hand_positions),
+            last_action=self._last_action_str,
+            pending=self.engine.pending_description,
+        ))
