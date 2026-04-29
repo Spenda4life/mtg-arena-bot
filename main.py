@@ -81,6 +81,7 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
     state_manager = GameStateManager(config)
     decision_engine = DecisionEngine(aggression=config.get("engine", {}).get("aggression", 0.7))
     executor = ExecutionHandler(
+        config=config,
         state_manager=state_manager,
         action_delay=arena_cfg.get("action_delay", 0.8),
         verification_timeout=arena_cfg.get("verification_timeout", 2.5),
@@ -101,7 +102,8 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
                 time.sleep(poll_interval)
                 continue
 
-            result = executor.execute(plan, before=snapshot)
+            context = executor.capture_context(snapshot)
+            result = executor.execute(plan, state=snapshot, context=context)
             decision_engine.record_result(plan, result.status == ExecutionStatus.SUCCESS)
             if result.status == ExecutionStatus.FAILURE:
                 LOGGER.debug("Action verification failed: %s", result.reason)

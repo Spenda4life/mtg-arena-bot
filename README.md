@@ -1,30 +1,28 @@
 # MTG Arena Bot
 
-An autonomous bot for MTG Arena (Standard BO1) that reads game state from
-Arena's log file and executes actions via keyboard and mouse automation.
+An autonomous bot for MTG Arena (Standard BO1) built around a strict separation
+between log-derived game state, Arena-agnostic decision logic, and Arena-specific
+execution.
 
 ---
 
 ## How it works
 
-```
-Arena log file  ──►  Log parser  ──►  Game state
-                                           │
-Screen capture  ──►  Vision detector  ─────┤
-                                           │
-                                      Decision engine
-                                           │
-                                      Input controller  ──►  Arena window
+```text
+Arena log file -> Log parser -> Core game state -> Decision engine -> Semantic action
+
+Arena window -> Screen capture -> Vision detector -> Execution context
+
+Semantic action + execution context -> Clicker / execution handler -> Arena window
 ```
 
 | Layer | Component | What it does |
 |---|---|---|
-| Game state | `ArenaLogParser` | Reads Arena's `Player.log` to extract phase, life totals, hand, battlefield, mana, available actions |
-| Game state | `GrpDatabase` | Maps Arena card GRP IDs → names, CMC, type using the installed SQLite card DB |
-| Game state | `MatchStateMachine` | Tracks match lifecycle (idle → mulliganing → playing → game over) |
-| Vision | `ScreenCapture` + `VisionDetector` | Grabs frames and finds UI buttons (pass, OK, keep hand, mulligan) via template matching |
-| Decision | `DecisionEngine` | Rule-based engine: keep 2–5 land hands, play land → cast highest CMC spell, attack all, block to trade |
-| Input | `InputController` | Executes actions via PyAutoGUI (keyboard shortcuts first, clicks for card selection and targeting) |
+| Core state | `GameStateManager` + `ArenaLogParser` | Reads Arena's `Player.log` and produces a serializable, coordinate-free game snapshot |
+| Core state | `GrpDatabase` | Maps Arena card GRP IDs -> names, CMC, and type using the installed SQLite card DB |
+| Decision | `DecisionEngine` | Pure rule-based engine: core game state in, semantic action out |
+| Execution context | `ScreenCapture` + `VisionDetector` | Captures Arena-only UI facts such as buttons, discard prompts, and playable hand outlines |
+| Actor | `ExecutionHandler` | Resolves semantic actions into Arena coordinates and executes clicks / keypresses |
 | Lifecycle | `ArenaProcess` | Optionally launches and kills the Arena process for unattended runs |
 
 ---
@@ -34,9 +32,9 @@ Screen capture  ──►  Vision detector  ─────┤
 - **Python 3.12+**
 - **MTG Arena** installed at the default path
   (`C:\Program Files\Wizards of the Coast\MTGA\`)
-- **Tesseract OCR** (for text recognition — install from
+- **Tesseract OCR** (for text recognition; install from
   [tesseract-ocr.github.io](https://tesseract-ocr.github.io/))
-- Arena must have **Detailed Logging** enabled (one-time setup, see below)
+- Arena must have **Detailed Logging** enabled
 
 ---
 
@@ -46,22 +44,18 @@ Screen capture  ──►  Vision detector  ─────┤
 pip install -r requirements.txt
 ```
 
-### Enable detailed logging in Arena (one-time)
-
-Arena writes full game state JSON to its log only when detailed logging is on.
+### Enable detailed logging in Arena
 
 1. Open MTG Arena
-2. Go to **Settings → Account**
-3. Enable the **Detailed Logs** toggle
+2. Go to **Settings -> Account**
+3. Enable **Detailed Logs**
 4. Restart Arena
-
-Once enabled, the toggle persists across sessions.
 
 ---
 
 ## Usage
 
-### Run the bot (Arena already open)
+### Run the bot
 
 ```bash
 python main.py
@@ -75,66 +69,46 @@ python main.py run
 python main.py run --launch
 ```
 
-This is the recommended mode for **scheduled / unattended grinding** — the bot
-manages the full Arena lifecycle itself.
-
 ### Arena process commands
 
 ```bash
-python main.py launch   # start Arena and wait for the home screen
-python main.py kill     # terminate Arena
-python main.py status   # print whether Arena is running
+python main.py launch
+python main.py kill
+python main.py status
 ```
 
 ### Configuration
 
 Copy `config/settings.yaml` to `config/settings.local.yaml` to override
-settings without touching the tracked file.
+settings without changing tracked defaults.
 
 Key options:
 
 ```yaml
 arena:
-  manage_lifecycle: true    # auto-launch and kill Arena (good for scheduled runs)
-  startup_timeout: 120      # seconds to wait for Arena home screen
-  poll_interval: 0.5        # how often (seconds) the bot reads the log
-  action_delay: 0.8         # pause after each click/keypress
+  manage_lifecycle: true
+  startup_timeout: 120
+  poll_interval: 0.5
+  action_delay: 0.8
+  verification_timeout: 2.5
+  verification_poll_interval: 0.25
 
 engine:
-  aggression: 0.7           # 0 = conservative blocks, 1 = always attack
+  aggression: 0.7
 
 logging:
-  level: "INFO"             # DEBUG for verbose output
+  level: "INFO"
   file: "logs/bot.log"
 ```
-
-### Scheduled daily grinding (Windows Task Scheduler)
-
-Create a task that runs:
-
-```
-python C:\path\to\mtg-arena-bot\main.py run --launch
-```
-
-With `manage_lifecycle: false` in `settings.yaml` (the `--launch` flag
-overrides it for this run), the bot will launch Arena, play until interrupted
-or Arena closes, then exit cleanly.
 
 ---
 
 ## Developer tools
 
 ```bash
-# Live game-state monitor (run while playing Arena)
 python tools/log_monitor.py
-
-# List all your decks with full card lists
 python tools/list_decks.py
-
-# Capture button templates for vision calibration
 python tools/capture_templates.py
-
-# Download Scryfall card data (optional GRP DB fallback)
 python tools/download_card_data.py
 ```
 
@@ -144,33 +118,31 @@ python tools/download_card_data.py
 python -m pytest tests/ -v
 ```
 
+For live-client validation, follow [TESTING_CHECKLIST.md](/C:/Users/Claude/mtg-arena-bot/TESTING_CHECKLIST.md).
+
 ---
 
 ## Project structure
 
-```
-main.py                     Entry point and CLI
+```text
+main.py                     Entry point and orchestrator
+game_state.py               Core game-state module (log-derived snapshot only)
+decision_engine.py          Arena-agnostic decision layer
+clicker_agent.py            Arena-specific execution layer
 config/
   settings.yaml             Default configuration
   settings.local.yaml       Local overrides (gitignored)
 src/
-  bot.py                    Main bot loop
   arena_process.py          Arena launch / kill / wait-for-ready
   capture/
     screen.py               Screen capture via MSS
   vision/
-    detector.py             Template matching for UI buttons
-    layout.py               Maps card zones to pixel coordinates
+    detector.py             Template matching and visual execution hints
+    layout.py               Arena coordinate mapping used by the execution layer
   game_state/
-    log_parser.py           Parses Player.log → GameState + DeckInfo
-    grp_db.py               GRP ID → card metadata (SQLite + Scryfall fallback)
-    match.py                Match lifecycle state machine
-    state.py                GameState / PlayerState / CardObject dataclasses
-  engine/
-    decision.py             Rule-based play decisions
-    actions.py              Action types
-  input/
-    controller.py           Keyboard and mouse execution via PyAutoGUI
+    log_parser.py           Parses Player.log -> internal game state + deck info
+    grp_db.py               GRP ID -> card metadata (SQLite + Scryfall fallback)
+    state.py                Internal parser-side dataclasses
 tools/
   log_monitor.py            Live game-state debug monitor
   list_decks.py             Print all player decks from the log
@@ -179,19 +151,16 @@ tools/
 tests/
   test_log_parser.py
   test_layout.py
-  test_match_fsm.py
+  test_three_module_architecture.py
 ```
 
 ---
 
 ## Notes and limitations
 
-- **Standard BO1 only.** The decision engine does not handle sideboarding or
-  best-of-three game-plan adjustments.
-- **Rule-based, not ML.** Card interactions not explicitly coded are passed
-  through (spacebar). Complex spell chains may not be handled correctly.
-- **Screen resolution.** Layout fractions in `settings.yaml` are calibrated
-  for 2560×1440 and 1920×1080. Adjust `layout.*` values if cards are clicked
-  in the wrong positions.
-- **Use responsibly.** Automated play may violate MTG Arena's Terms of Service.
-  Use at your own risk and only on accounts you own.
+- **Standard BO1 only.** The decision engine does not handle sideboarding or best-of-three game plans.
+- **Rule-based, not ML.** Card interactions not explicitly coded are passed through as semantic "pass priority" actions.
+- **Strict separation.** The decision engine is intentionally unaware of Arena button names, templates, and coordinates.
+- **Vision is still required for execution.** Arena's log is authoritative for game rules state, but button positions, prompts, and click targets remain screen-space concerns.
+- **Screen resolution matters.** Adjust `layout.*` values in `settings.yaml` if execution clicks the wrong positions.
+- **Use responsibly.** Automated play may violate MTG Arena's Terms of Service. Use at your own risk.

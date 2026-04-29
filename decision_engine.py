@@ -64,9 +64,12 @@ class ActionPlan:
     description: str = ""
     metadata: dict[str, object] = field(default_factory=dict)
 
+    def __str__(self) -> str:
+        return f"{self.action_type.value}: {self.description}"
+
 
 class DecisionEngine:
-    """Arena-agnostic decision layer using semantic game actions only."""
+    """Pure decision layer operating only on portable game state."""
 
     def __init__(self, aggression: float = 0.7):
         self.aggression = aggression
@@ -80,42 +83,43 @@ class DecisionEngine:
         self._roll_turn_state(snapshot)
 
         if self._pending_target_spell:
-            return self._resolve_target(snapshot, self._pending_target_spell)
+            plan = self._resolve_target(snapshot, self._pending_target_spell)
+            LOGGER.debug("Decision: %s", plan)
+            return plan
 
-        if snapshot.keep_hand_button_visible or snapshot.mulligan_button_visible:
-            return self._decide_opening_hand(snapshot)
+        if snapshot.mulligan_pending:
+            plan = self._decide_opening_hand(snapshot)
+            LOGGER.debug("Decision: %s", plan)
+            return plan
 
-        if snapshot.discard_prompt_visible:
-            return self._decide_discard(snapshot)
+        if snapshot.discard_required:
+            plan = self._decide_discard(snapshot)
+            LOGGER.debug("Decision: %s", plan)
+            return plan
 
         if not snapshot.has_priority:
             return None
 
-        if snapshot.ok_button_visible:
-            return ActionPlan(
-                action_type=ActionType.PASS_PRIORITY,
-                description="ok/confirm",
-                expected_state_change={
-                    "any_of": [
-                        {"priority": False},
-                        {"phase_changed": True},
-                        {"buttons_hidden": ["ok_button"]},
-                    ]
-                },
-            )
-
         if snapshot.phase in {"MAIN1", "MAIN2"}:
-            return self._decide_main_phase(snapshot)
+            plan = self._decide_main_phase(snapshot)
+            LOGGER.debug("Decision: %s", plan)
+            return plan
         if snapshot.phase == "COMBAT_ATTACK":
-            return self._decide_attack(snapshot)
+            plan = self._decide_attack(snapshot)
+            LOGGER.debug("Decision: %s", plan)
+            return plan
         if snapshot.phase == "COMBAT_BLOCK":
-            return self._decide_block(snapshot)
+            plan = self._decide_block(snapshot)
+            LOGGER.debug("Decision: %s", plan)
+            return plan
 
-        return ActionPlan(
+        plan = ActionPlan(
             action_type=ActionType.PASS_PRIORITY,
             description=f"pass {snapshot.phase.lower()}",
             expected_state_change={"any_of": [{"priority": False}, {"phase_changed": True}]},
         )
+        LOGGER.debug("Decision: %s", plan)
+        return plan
 
     def record_result(self, plan: ActionPlan, success: bool) -> None:
         if not success:
@@ -155,23 +159,21 @@ class DecisionEngine:
             return ActionPlan(
                 action_type=ActionType.KEEP_HAND,
                 description=f"keep {land_count}L/{total}",
-                expected_state_change={"buttons_hidden": ["keep_hand_button", "mulligan_button"]},
+                expected_state_change={"mulligan_pending": False},
             )
 
         return ActionPlan(
             action_type=ActionType.MULLIGAN,
-            subject={"kind": "button", "name": "mulligan"},
             description=f"mulligan {land_count}L/{total}",
-            expected_state_change={"buttons_hidden": ["keep_hand_button", "mulligan_button"]},
+            expected_state_change={"mulligan_pending": False},
         )
 
     def _decide_discard(self, snapshot: GameSnapshot) -> ActionPlan:
         if self._discard_selected:
             return ActionPlan(
                 action_type=ActionType.CONFIRM_DISCARD,
-                subject={"kind": "button", "name": "discard_submit"},
                 description="submit discard",
-                expected_state_change={"buttons_hidden": ["discard_prompt"]},
+                expected_state_change={"discard_required": False},
             )
 
         candidates = [card for card in snapshot.we.hand if self._has_card_identity(card)]
@@ -194,7 +196,7 @@ class DecisionEngine:
 
     def _decide_main_phase(self, snapshot: GameSnapshot) -> ActionPlan:
         if not self._land_played_this_turn:
-            land = next((card for card in snapshot.we.hand if card.is_land and self._is_playable(snapshot, card)), None)
+            land = next((card for card in snapshot.we.hand if card.is_land), None)
             if land:
                 self._land_played_this_turn = True
                 return ActionPlan(
@@ -205,11 +207,12 @@ class DecisionEngine:
                     metadata={"card_name": land.name},
                 )
 
+        playable_spells = [
+            card for card in snapshot.we.hand if not card.is_land and card.cmc <= snapshot.we.total_mana_available
+        ]
+
         non_targeted = sorted(
-            [
-                card for card in snapshot.we.hand
-                if not card.is_land and card.name.lower() not in _TARGETED_SPELLS and self._is_playable(snapshot, card)
-            ],
+            [card for card in playable_spells if card.name.lower() not in _TARGETED_SPELLS],
             key=lambda card: card.cmc,
             reverse=True,
         )
@@ -224,10 +227,7 @@ class DecisionEngine:
             )
 
         targeted = sorted(
-            [
-                card for card in snapshot.we.hand
-                if not card.is_land and card.name.lower() in _TARGETED_SPELLS and self._is_playable(snapshot, card)
-            ],
+            [card for card in playable_spells if card.name.lower() in _TARGETED_SPELLS],
             key=lambda card: card.cmc,
             reverse=True,
         )
@@ -301,8 +301,7 @@ class DecisionEngine:
 
     def _decide_attack(self, snapshot: GameSnapshot) -> ActionPlan:
         available = [
-            card for card in snapshot.we.attackers
-            if self._card_key(card) not in self._attackers_declared and self._has_card_identity(card)
+            card for card in snapshot.we.attackers if self._card_key(card) not in self._attackers_declared and self._has_card_identity(card)
         ]
         if available:
             creature = available[0]
@@ -359,20 +358,8 @@ class DecisionEngine:
             expected_state_change={"any_of": [{"phase_changed": True}, {"priority": False}]},
         )
 
-    def _is_playable(self, snapshot: GameSnapshot, card: CardSnapshot) -> bool:
-        if card.is_playable:
-            return True
-        if card.is_land:
-            return True
-        return card.cmc <= snapshot.we.total_mana_available
-
     @staticmethod
-    def _card_ref(
-        card: CardSnapshot,
-        *,
-        zone: str,
-        controller: str = "self",
-    ) -> dict[str, object]:
+    def _card_ref(card: CardSnapshot, *, zone: str, controller: str = "self") -> dict[str, object]:
         return {
             "kind": "card",
             "instance_id": card.instance_id,

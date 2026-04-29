@@ -6,12 +6,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from src.capture.screen import ScreenCapture, is_arena_running
+from src.capture.screen import is_arena_running
 from src.game_state.grp_db import GrpDatabase
 from src.game_state.log_parser import ArenaLogParser, LOG_PATH
 from src.game_state.state import CardObject, GameState, PlayerState
-from src.vision.detector import VisionDetector
-from src.vision.layout import CardPositionMapper
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,9 +28,6 @@ class CardSnapshot:
     keywords: list[str] = field(default_factory=list)
     card_type: str = ""
     color: str = ""
-    is_playable: bool = False
-    screen_x: int | None = None
-    screen_y: int | None = None
 
     @property
     def is_land(self) -> bool:
@@ -73,22 +68,12 @@ class GameSnapshot:
     turn_number: int = 0
     is_our_turn: bool = False
     has_priority: bool = False
+    mulligan_pending: bool = False
+    discard_required: bool = False
     we: PlayerSnapshot = field(default_factory=PlayerSnapshot)
     opponent: PlayerSnapshot = field(default_factory=PlayerSnapshot)
     stack: list[str] = field(default_factory=list)
-    pass_button_visible: bool = False
-    ok_button_visible: bool = False
-    keep_hand_button_visible: bool = False
-    mulligan_button_visible: bool = False
-    pass_button_pos: tuple[int, int] | None = None
-    ok_button_pos: tuple[int, int] | None = None
-    keep_hand_button_pos: tuple[int, int] | None = None
-    mulligan_button_pos: tuple[int, int] | None = None
     available_action_types: list[str] = field(default_factory=list)
-    opponent_player_pos: tuple[int, int] | None = None
-    playable_hand_positions: list[tuple[int, int]] = field(default_factory=list)
-    discard_prompt_visible: bool = False
-    discard_submit_pos: tuple[int, int] | None = None
     arena_running: bool = False
     timestamp: float = 0.0
 
@@ -97,43 +82,29 @@ class GameSnapshot:
 
 
 class GameStateManager:
-    """Maintains an internal game model from Arena's log and screen state."""
+    """Maintains a pure, log-derived game model for the decision engine."""
 
     def __init__(self, config: dict, log_path: Path | None = None):
-        arena_cfg = config.get("arena", {})
-        vision_cfg = config.get("vision", {})
-
-        ref_res = tuple(arena_cfg.get("reference_resolution", [2560, 1440]))
         grp_db = GrpDatabase()
-        self.capture = ScreenCapture()
-        self.detector = VisionDetector(
-            reference_resolution=ref_res,
-            threshold=vision_cfg.get("template_threshold", 0.80),
-        )
-        layout = CardPositionMapper.from_config(config)
         self.log_parser = ArenaLogParser(
             grp_db=grp_db,
             log_path=log_path or LOG_PATH,
-            layout=layout,
+            layout=None,
         )
         self._state = GameState()
         self._snapshot = GameSnapshot()
         self._last_log_update = 0.0
 
     def refresh(self) -> GameSnapshot:
-        """Poll the log, enrich the state with vision, and return a fresh snapshot."""
+        previous = self._snapshot
         updated = self.log_parser.poll()
         if updated is not None:
             self._state = updated
             self._last_log_update = time.time()
-            LOGGER.debug("Log update applied to internal game state")
-
-        if is_arena_running():
-            self._apply_visual_state()
-        else:
-            self._clear_visual_state()
+            LOGGER.debug("Log update applied to core game state")
 
         self._snapshot = self._to_snapshot(self._state, arena_running=is_arena_running())
+        self._log_snapshot_changes(previous, self._snapshot)
         return self._snapshot
 
     def get_snapshot(self) -> GameSnapshot:
@@ -149,10 +120,8 @@ class GameStateManager:
             return True
 
         hand_delta = expected_state_change.get("hand_delta")
-        if hand_delta is not None:
-            actual_delta = len(after.we.hand) - len(before.we.hand)
-            if actual_delta != hand_delta:
-                return False
+        if hand_delta is not None and len(after.we.hand) - len(before.we.hand) != hand_delta:
+            return False
 
         opponent_life_delta_max = expected_state_change.get("opponent_life_delta_max")
         if opponent_life_delta_max is not None:
@@ -175,62 +144,19 @@ class GameStateManager:
         if priority is not None and after.has_priority != priority:
             return False
 
+        mulligan_pending = expected_state_change.get("mulligan_pending")
+        if mulligan_pending is not None and after.mulligan_pending != mulligan_pending:
+            return False
+
+        discard_required = expected_state_change.get("discard_required")
+        if discard_required is not None and after.discard_required != discard_required:
+            return False
+
         any_of = expected_state_change.get("any_of", [])
         if any_of:
             return any(self.verify_expected_change(before, after, option) for option in any_of)
 
-        buttons_hidden = expected_state_change.get("buttons_hidden", [])
-        for button in buttons_hidden:
-            if getattr(after, f"{button}_visible", False):
-                return False
-
-        buttons_visible = expected_state_change.get("buttons_visible", [])
-        for button in buttons_visible:
-            if not getattr(after, f"{button}_visible", False):
-                return False
-
         return True
-
-    def _apply_visual_state(self) -> None:
-        frame = self.capture.grab()
-        buttons = self.detector.detect_buttons(frame)
-        self._state.pass_button_visible, self._state.pass_button_pos = buttons["pass"]
-        self._state.keep_hand_button_visible, self._state.keep_hand_button_pos = buttons["keep_hand"]
-        self._state.mulligan_button_visible, self._state.mulligan_button_pos = buttons["mulligan"]
-        self._state.playable_hand_positions = self.detector.detect_playable_hand_cards(frame)
-        self._mark_playable_hand_cards()
-        self._state.discard_prompt_visible, self._state.discard_submit_pos = (
-            self.detector.detect_discard_state(frame)
-        )
-
-        ok_vis, ok_pos = buttons["ok"]
-        if not ok_vis and self._state.has_priority and self._state.phase.name == "UNKNOWN":
-            ok_vis = True
-        self._state.ok_button_visible = ok_vis
-        self._state.ok_button_pos = ok_pos
-
-    def _clear_visual_state(self) -> None:
-        self._state.pass_button_visible = False
-        self._state.pass_button_pos = None
-        self._state.ok_button_visible = False
-        self._state.ok_button_pos = None
-        self._state.keep_hand_button_visible = False
-        self._state.keep_hand_button_pos = None
-        self._state.mulligan_button_visible = False
-        self._state.mulligan_button_pos = None
-        self._state.playable_hand_positions = []
-        for card in self._state.we.hand:
-            card.is_playable = False
-        self._state.discard_prompt_visible = False
-        self._state.discard_submit_pos = None
-
-    def _mark_playable_hand_cards(self) -> None:
-        playable = self._state.playable_hand_positions
-        for card in self._state.we.hand:
-            if not playable or card.screen_x is None:
-                card.is_playable = False
-                continue
-            card.is_playable = min(abs(px - card.screen_x) for px, _ in playable) < 100
 
     def _to_snapshot(self, state: GameState, arena_running: bool) -> GameSnapshot:
         return GameSnapshot(
@@ -238,22 +164,12 @@ class GameStateManager:
             turn_number=state.turn_number,
             is_our_turn=state.is_our_turn,
             has_priority=state.has_priority,
+            mulligan_pending=self._is_mulligan_pending(state),
+            discard_required=self._is_discard_required(state),
             we=self._player_to_snapshot(state.we),
             opponent=self._player_to_snapshot(state.opponent),
             stack=list(state.stack),
-            pass_button_visible=state.pass_button_visible,
-            ok_button_visible=state.ok_button_visible,
-            keep_hand_button_visible=state.keep_hand_button_visible,
-            mulligan_button_visible=state.mulligan_button_visible,
-            pass_button_pos=state.pass_button_pos,
-            ok_button_pos=state.ok_button_pos,
-            keep_hand_button_pos=state.keep_hand_button_pos,
-            mulligan_button_pos=state.mulligan_button_pos,
             available_action_types=list(state.available_action_types),
-            opponent_player_pos=state.opponent_player_pos,
-            playable_hand_positions=list(state.playable_hand_positions),
-            discard_prompt_visible=state.discard_prompt_visible,
-            discard_submit_pos=state.discard_submit_pos,
             arena_running=arena_running,
             timestamp=time.time(),
         )
@@ -285,7 +201,33 @@ class GameStateManager:
             keywords=list(card.keywords),
             card_type=card.card_type,
             color=card.color,
-            is_playable=False,
-            screen_x=card.screen_x,
-            screen_y=card.screen_y,
         )
+
+    @staticmethod
+    def _is_mulligan_pending(state: GameState) -> bool:
+        return (
+            state.phase.name == "UNKNOWN"
+            and bool(state.we.hand)
+            and not state.we.battlefield
+            and not state.opponent.battlefield
+            and state.turn_number == 0
+        )
+
+    @staticmethod
+    def _is_discard_required(state: GameState) -> bool:
+        return state.has_priority and len(state.we.hand) > 7 and state.phase.name == "ENDING"
+
+    @staticmethod
+    def _log_snapshot_changes(before: GameSnapshot, after: GameSnapshot) -> None:
+        if before.phase != after.phase:
+            LOGGER.info("Phase changed: %s -> %s", before.phase, after.phase)
+        if before.has_priority != after.has_priority:
+            LOGGER.debug("Priority changed: %s -> %s", before.has_priority, after.has_priority)
+        if before.mulligan_pending != after.mulligan_pending:
+            LOGGER.info("Mulligan pending changed: %s -> %s", before.mulligan_pending, after.mulligan_pending)
+        if before.discard_required != after.discard_required:
+            LOGGER.info("Discard required changed: %s -> %s", before.discard_required, after.discard_required)
+        if len(before.we.hand) != len(after.we.hand):
+            LOGGER.debug("Hand size changed: %s -> %s", len(before.we.hand), len(after.we.hand))
+        if before.stack != after.stack:
+            LOGGER.debug("Stack changed: %s -> %s", before.stack, after.stack)
