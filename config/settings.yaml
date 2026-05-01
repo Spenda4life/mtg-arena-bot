@@ -14,11 +14,17 @@ arena:
   poll_interval: 0.5
   # How long to wait after clicking before re-polling
   action_delay: 0.8
+  # Optional pause after drawing the overlay target but before sending input.
+  pre_click_delay: 0.0
+  # Maximum seconds to wait for the Arena log/state to reflect an input
+  verification_timeout: 5.0
 
 vision:
   # Minimum confidence for template matches (0-1).
   # Keep high enough that grayed-out/inactive buttons don't match.
   template_threshold: 0.88
+  # Show a live topmost debug window with the captured frame and click target markers.
+  debug_overlay: false
   # Minimum confidence for OCR reads
   ocr_confidence: 60
   # Debug: save annotated screenshots each loop iteration
@@ -28,6 +34,8 @@ vision:
 engine:
   # Aggression level: controls attack/block decisions (0.0 = conservative, 1.0 = all-in)
   aggression: 0.7
+  # Stop instead of retrying the same failed action forever.
+  max_consecutive_failures: 3
   # If true, pass priority immediately when no action is available
   auto_pass: true
   # Maximum seconds to hold priority before auto-passing

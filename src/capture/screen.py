@@ -1,6 +1,4 @@
 from __future__ import annotations
-import re
-import subprocess
 import numpy as np
 import mss
 import mss.tools
@@ -30,6 +28,46 @@ def _find_arena_hwnd() -> int | None:
 
     ctypes.windll.user32.EnumWindows(_cb, 0)
     return found[0] if found else None
+
+
+def get_arena_window_bounds() -> dict | None:
+    """Return Arena's screen-space window bounds via Win32, or None if not found."""
+    global _arena_hwnd
+    import ctypes
+    import ctypes.wintypes as wt
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", wt.LONG),
+            ("top", wt.LONG),
+            ("right", wt.LONG),
+            ("bottom", wt.LONG),
+        ]
+
+    if _arena_hwnd is not None and not ctypes.windll.user32.IsWindow(_arena_hwnd):
+        _arena_hwnd = None
+
+    if _arena_hwnd is None:
+        _arena_hwnd = _find_arena_hwnd()
+    if _arena_hwnd is None:
+        return None
+
+    rect = RECT()
+    if not ctypes.windll.user32.GetWindowRect(_arena_hwnd, ctypes.byref(rect)):
+        _arena_hwnd = None
+        return None
+
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return None
+
+    return {
+        "left": int(rect.left),
+        "top": int(rect.top),
+        "width": int(width),
+        "height": int(height),
+    }
 
 
 def is_arena_running() -> bool:
@@ -68,40 +106,13 @@ def focus_arena() -> bool:
 
 def find_arena_window() -> dict | None:
     """Return the bounding box of the MTG Arena window, or None if not found."""
-    import subprocess
-
-    # Ask PowerShell to return the window's screen rectangle via Win32 GetWindowRect.
-    ps_script = """
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class WinUtil {
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr hwnd, out RECT r);
-    public struct RECT { public int left, top, right, bottom; }
-}
-"@
-$proc = Get-Process | Where-Object {$_.MainWindowTitle -match 'MTGA|Magic.*Arena'} | Select-Object -First 1
-if ($proc -and $proc.MainWindowHandle -ne 0) {
-    $r = New-Object WinUtil+RECT
-    [WinUtil]::GetWindowRect($proc.MainWindowHandle, [ref]$r) | Out-Null
-    "$($r.left),$($r.top),$($r.right),$($r.bottom)"
-}
-"""
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True, text=True, timeout=10
+    bounds = get_arena_window_bounds()
+    if bounds is not None:
+        logger.debug(
+            f"Arena window: {bounds['width']}x{bounds['height']} "
+            f"at ({bounds['left']},{bounds['top']})"
         )
-        coords = result.stdout.strip()
-        if coords:
-            left, top, right, bottom = map(int, coords.split(","))
-            width, height = right - left, bottom - top
-            if width > 0 and height > 0:
-                logger.debug(f"Arena window: {width}x{height} at ({left},{top})")
-                return {"left": left, "top": top, "width": width, "height": height}
-    except Exception as e:
-        logger.warning(f"Could not get Arena window bounds: {e}")
+        return bounds
 
     # Fall back to primary monitor
     logger.debug("Falling back to primary monitor capture")
@@ -111,10 +122,21 @@ if ($proc -and $proc.MainWindowHandle -ne 0) {
 
 class ScreenCapture:
     def __init__(self, monitor: dict | None = None):
+        self._fixed_monitor = monitor is not None
         self._monitor = monitor or find_arena_window()
+
+    @property
+    def monitor(self) -> dict:
+        return self._monitor
+
+    def refresh_monitor(self) -> dict:
+        if not self._fixed_monitor:
+            self._monitor = find_arena_window()
+        return self._monitor
 
     def grab(self) -> np.ndarray:
         """Capture the current screen region as a BGR numpy array."""
+        self.refresh_monitor()
         with mss.mss() as sct:
             raw = sct.grab(self._monitor)
             img = Image.frombytes("RGB", raw.size, raw.rgb)

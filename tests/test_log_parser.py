@@ -157,6 +157,18 @@ def test_json_stream_extractor_multiple_objects():
     assert results[1] == {"b": 2}
 
 
+def test_json_stream_extractor_ignores_bracketed_log_prefix():
+    extractor = JsonStreamExtractor()
+    results = extractor.feed('[UnityCrossThreadLogger]5/1/2026 3:52:44 PM')
+    assert results == []
+
+
+def test_json_stream_extractor_prefixed_json_object():
+    extractor = JsonStreamExtractor()
+    results = extractor.feed('[UnityCrossThreadLogger]==> QuestGetQuests {"id":"123","request":"{}"}')
+    assert results == [{"id": "123", "request": "{}"}]
+
+
 # ---------------------------------------------------------------------------
 # Deck inventory tests
 # ---------------------------------------------------------------------------

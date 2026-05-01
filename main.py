@@ -12,6 +12,7 @@ from clicker_agent import ExecutionHandler, ExecutionStatus
 from decision_engine import DecisionEngine
 from game_state import GameStateManager
 from src.arena_process import ArenaProcess
+from src.overlay import Overlay
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +68,19 @@ def _make_arena(config: dict) -> ArenaProcess:
     )
 
 
+def _is_idle_at_home(snapshot: GameSnapshot) -> bool:
+    return (
+        snapshot.phase == "UNKNOWN"
+        and not snapshot.mulligan_pending
+        and not snapshot.discard_required
+        and not snapshot.has_priority
+        and not snapshot.we.hand
+        and not snapshot.we.battlefield
+        and not snapshot.opponent.battlefield
+        and not snapshot.available_action_types
+    )
+
+
 def cmd_run(args: argparse.Namespace, config: dict) -> None:
     arena_cfg = config.get("arena", {})
     manage = args.launch or arena_cfg.get("manage_lifecycle", False)
@@ -78,17 +92,26 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
         arena.launch()
 
     poll_interval = arena_cfg.get("poll_interval", 0.5)
+    overlay_enabled = config.get("vision", {}).get("debug_overlay", False)
     state_manager = GameStateManager(config)
     decision_engine = DecisionEngine(aggression=config.get("engine", {}).get("aggression", 0.7))
+    overlay = Overlay() if overlay_enabled else None
     executor = ExecutionHandler(
         config=config,
         state_manager=state_manager,
         action_delay=arena_cfg.get("action_delay", 0.8),
-        verification_timeout=arena_cfg.get("verification_timeout", 2.5),
+        pre_click_delay=arena_cfg.get("pre_click_delay", 0.5 if overlay_enabled else 0.0),
+        verification_timeout=arena_cfg.get("verification_timeout", 5.0),
         verification_poll_interval=arena_cfg.get("verification_poll_interval", 0.25),
+        overlay=overlay,
     )
+    max_consecutive_failures = config.get("engine", {}).get("max_consecutive_failures", 3)
+    consecutive_failure_key = ""
+    consecutive_failure_count = 0
 
     LOGGER.info("Starting MTG Arena bot loop")
+    last_wait_log = 0.0
+    last_wait_message = ""
     try:
         while True:
             snapshot = state_manager.refresh()
@@ -99,18 +122,53 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
 
             plan = decision_engine.decide(snapshot)
             if plan is None:
+                now = time.time()
+                if _is_idle_at_home(snapshot):
+                    wait_message = "Arena is open; waiting for a game to start"
+                else:
+                    wait_message = (
+                        f"Waiting for priority: phase={snapshot.phase} "
+                        f"turn={snapshot.turn_number} "
+                        f"our_turn={snapshot.is_our_turn}"
+                    )
+
+                if wait_message != last_wait_message or now - last_wait_log >= 10:
+                    LOGGER.info(wait_message)
+                    last_wait_message = wait_message
+                    last_wait_log = now
                 time.sleep(poll_interval)
                 continue
 
+            last_wait_message = ""
             context = executor.capture_context(snapshot)
             result = executor.execute(plan, state=snapshot, context=context)
             decision_engine.record_result(plan, result.status == ExecutionStatus.SUCCESS)
             if result.status == ExecutionStatus.FAILURE:
                 LOGGER.debug("Action verification failed: %s", result.reason)
+                failure_key = f"{plan.action_type.value}:{plan.description}:{plan.subject}:{plan.target}"
+                if failure_key == consecutive_failure_key:
+                    consecutive_failure_count += 1
+                else:
+                    consecutive_failure_key = failure_key
+                    consecutive_failure_count = 1
+
+                if consecutive_failure_count >= max_consecutive_failures:
+                    LOGGER.error(
+                        "Stopping after %s consecutive failures for %s: %s",
+                        consecutive_failure_count,
+                        plan.description or plan.action_type.value,
+                        result.reason,
+                    )
+                    break
+            else:
+                consecutive_failure_key = ""
+                consecutive_failure_count = 0
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         LOGGER.info("Bot stopped by user")
     finally:
+        if overlay is not None:
+            overlay.stop()
         if manage:
             arena.kill()
 

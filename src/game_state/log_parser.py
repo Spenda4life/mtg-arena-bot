@@ -109,6 +109,17 @@ class JsonStreamExtractor:
         self._buf: list[str] = []
         self._depth = 0
         self._active = False
+        self._in_string = False
+        self._escape = False
+
+    @staticmethod
+    def _is_json_array_start(line: str, idx: int) -> bool:
+        """Reject bracketed log prefixes like [UnityCrossThreadLogger]."""
+        for ch in line[idx + 1:]:
+            if ch.isspace():
+                continue
+            return ch in '{["-0123456789tfn]'
+        return False
 
     def feed(self, line: str) -> list[dict]:
         results = []
@@ -118,13 +129,28 @@ class JsonStreamExtractor:
                     self._active = True
                     self._depth = 1
                     self._buf = ["{"]
-                elif ch == "[":
+                    self._in_string = False
+                    self._escape = False
+                elif ch == "[" and self._is_json_array_start(line, ch_idx):
                     self._active = True
                     self._depth = 1
                     self._buf = ["["]
+                    self._in_string = False
+                    self._escape = False
             else:
                 self._buf.append(ch)
-                if ch in ("{", "["):
+                if self._in_string:
+                    if self._escape:
+                        self._escape = False
+                    elif ch == "\\":
+                        self._escape = True
+                    elif ch == '"':
+                        self._in_string = False
+                    continue
+
+                if ch == '"':
+                    self._in_string = True
+                elif ch in ("{", "["):
                     self._depth += 1
                 elif ch in ("}", "]"):
                     self._depth -= 1
@@ -132,6 +158,8 @@ class JsonStreamExtractor:
                         blob = "".join(self._buf)
                         self._buf = []
                         self._active = False
+                        self._in_string = False
+                        self._escape = False
                         try:
                             results.append(json.loads(blob))
                         except json.JSONDecodeError as e:
