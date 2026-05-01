@@ -1,166 +1,201 @@
 # MTG Arena Bot
 
-An autonomous bot for MTG Arena (Standard BO1) built around a strict separation
-between log-derived game state, Arena-agnostic decision logic, and Arena-specific
-execution.
+An experimental MTG Arena bot for Standard BO1 and bot-match validation. The
+repo is organized around a strict split between:
 
----
+- log-derived game state
+- Arena-agnostic decisions
+- Arena-specific execution
 
-## How it works
+That split is the main design constraint. The decision engine should produce
+semantic actions, not coordinates. The clicker layer is responsible for turning
+those semantic actions into keyboard and mouse input.
+
+## Current Status
+
+The bot can:
+
+- detect whether Arena is running
+- read Arena's detailed `Player.log`
+- build a coordinate-free game snapshot
+- choose simple rule-based actions
+- detect keep, mulligan, discard, and some button states visually
+- execute keypresses and clicks through `pyautogui`
+- verify expected state changes from the log
+- stop after repeated identical execution failures
+- optionally draw a lightweight debug overlay showing intended targets
+
+Recent live validation confirmed that home-screen idling and mulligan handling
+work. First-main-phase land play is still under active debugging: when playable
+hand-card vision fails, the fallback hand geometry can click the wrong card in
+Arena's fanned hand layout.
+
+## Runtime Flow
 
 ```text
-Arena log file -> Log parser -> Core game state -> Decision engine -> Semantic action
-
-Arena window -> Screen capture -> Vision detector -> Execution context
-
-Semantic action + execution context -> Clicker / execution handler -> Arena window
+Arena Player.log
+  -> ArenaLogParser
+  -> GameStateManager
+  -> GameSnapshot
+  -> DecisionEngine
+  -> ActionPlan
+  -> ExecutionHandler
+  -> ScreenCapture + VisionDetector + CardPositionMapper
+  -> pyautogui input
+  -> verification against refreshed GameSnapshot
 ```
 
-| Layer | Component | What it does |
-|---|---|---|
-| Core state | `GameStateManager` + `ArenaLogParser` | Reads Arena's `Player.log` and produces a serializable, coordinate-free game snapshot |
-| Core state | `GrpDatabase` | Maps Arena card GRP IDs -> names, CMC, and type using the installed SQLite card DB |
-| Decision | `DecisionEngine` | Pure rule-based engine: core game state in, semantic action out |
-| Execution context | `ScreenCapture` + `VisionDetector` | Captures Arena-only UI facts such as buttons, discard prompts, and playable hand outlines |
-| Actor | `ExecutionHandler` | Resolves semantic actions into Arena coordinates and executes clicks / keypresses |
-| Lifecycle | `ArenaProcess` | Optionally launches and kills the Arena process for unattended runs |
+Arena's log is treated as the source of truth for game state. Screen capture is
+used only for UI facts that the log does not provide, such as button positions,
+discard prompts, playable hand outlines, and click targets.
 
----
+## Key Files
+
+```text
+main.py                     CLI entry point and bot loop
+game_state.py               Public game-state manager and snapshots
+decision_engine.py          Rule-based semantic decision engine
+clicker_agent.py            Execution handler and click verification
+
+src/arena_process.py        Arena launch, kill, and status helpers
+src/overlay.py              Optional lightweight debug overlay
+src/capture/screen.py       Arena window discovery and MSS capture
+src/vision/detector.py      Template matching and visual hints
+src/vision/layout.py        Fallback coordinate mapper
+src/game_state/log_parser.py Player.log JSON stream parser
+src/game_state/grp_db.py    Arena card database lookup
+src/game_state/state.py     Parser-side state dataclasses
+
+tools/log_monitor.py        Live log/state monitor
+tools/list_decks.py         Deck inspection helper
+tools/capture_templates.py  UI template capture helper
+tools/download_card_data.py Card data helper
+
+tests/test_log_parser.py
+tests/test_layout.py
+tests/test_three_module_architecture.py
+```
+
+The current source path does not include an automatic game-start navigator. The
+active `run` command waits for a game to start and then acts on the game state.
 
 ## Prerequisites
 
-- **Python 3.12+**
-- **MTG Arena** installed at the default path
-  (`C:\Program Files\Wizards of the Coast\MTGA\`)
-- **Tesseract OCR** (for text recognition; install from
-  [tesseract-ocr.github.io](https://tesseract-ocr.github.io/))
-- Arena must have **Detailed Logging** enabled
+- Python 3.12+
+- MTG Arena installed locally
+- Arena detailed logging enabled
+- Tesseract OCR installed and available to `pytesseract`
+- Python dependencies from `requirements.txt`
 
----
-
-## Setup
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Enable detailed logging in Arena
+Enable detailed logging in Arena:
 
-1. Open MTG Arena
-2. Go to **Settings -> Account**
-3. Enable **Detailed Logs**
-4. Restart Arena
+1. Open Arena.
+2. Go to Settings -> Account.
+3. Enable Detailed Logs.
+4. Restart Arena.
 
----
+## Commands
 
-## Usage
-
-### Run the bot
+Run the bot loop against an already-open Arena client:
 
 ```bash
 python main.py
-# or explicitly
 python main.py run
+python main.py run --no-launch
 ```
 
-### Launch Arena, run the bot, then kill Arena
+Launch Arena before running:
 
 ```bash
 python main.py run --launch
 ```
 
-### Arena process commands
+Process helpers:
 
 ```bash
+python main.py status
 python main.py launch
 python main.py kill
-python main.py status
 ```
 
-### Configuration
+Run tests:
 
-Copy `config/settings.yaml` to `config/settings.local.yaml` to override
-settings without changing tracked defaults.
+```bash
+pytest
+```
 
-Key options:
+## Configuration
+
+Defaults live in `config/settings.yaml`. Local overrides live in
+`config/settings.local.yaml`, which is gitignored.
+
+Useful options:
 
 ```yaml
 arena:
-  manage_lifecycle: true
-  startup_timeout: 120
+  manage_lifecycle: false
   poll_interval: 0.5
   action_delay: 0.8
-  verification_timeout: 2.5
-  verification_poll_interval: 0.25
+  pre_click_delay: 0.0
+  verification_timeout: 5.0
+
+vision:
+  template_threshold: 0.88
+  debug_overlay: false
+  debug_screenshots: false
 
 engine:
   aggression: 0.7
+  max_consecutive_failures: 3
 
-logging:
-  level: "INFO"
-  file: "logs/bot.log"
+layout:
+  hand_y: 0.905
+  hand_x_min: 0.175
+  hand_x_max: 0.825
 ```
 
----
+Set `vision.debug_overlay: true` locally when diagnosing click targets. The
+overlay is intentionally lightweight: it redraws only when new action data
+arrives, refreshes at a low rate, and hides quickly when stale. It is still a
+transparent topmost window over a game, so leave it off for normal play.
 
-## Developer tools
+## Live Testing
 
-```bash
-python tools/log_monitor.py
-python tools/list_decks.py
-python tools/capture_templates.py
-python tools/download_card_data.py
-```
+Follow `TESTING_CHECKLIST.md` for full live-client validation. A practical
+manual loop is:
 
-### Tests
+1. Start Arena and sit on the home screen.
+2. Run `python main.py run --no-launch`.
+3. Start a bot match manually.
+4. Watch `logs/bot.log`.
+5. Confirm decisions are followed by verified state changes.
+6. Stop and inspect failures before letting repeated actions continue.
 
-```bash
-python -m pytest tests/ -v
-```
-
-For live-client validation, follow [TESTING_CHECKLIST.md](/C:/Users/Claude/mtg-arena-bot/TESTING_CHECKLIST.md).
-
----
-
-## Project structure
+Important log lines:
 
 ```text
-main.py                     Entry point and orchestrator
-game_state.py               Core game-state module (log-derived snapshot only)
-decision_engine.py          Arena-agnostic decision layer
-clicker_agent.py            Arena-specific execution layer
-config/
-  settings.yaml             Default configuration
-  settings.local.yaml       Local overrides (gitignored)
-src/
-  arena_process.py          Arena launch / kill / wait-for-ready
-  capture/
-    screen.py               Screen capture via MSS
-  vision/
-    detector.py             Template matching and visual execution hints
-    layout.py               Arena coordinate mapping used by the execution layer
-  game_state/
-    log_parser.py           Parses Player.log -> internal game state + deck info
-    grp_db.py               GRP ID -> card metadata (SQLite + Scryfall fallback)
-    state.py                Internal parser-side dataclasses
-tools/
-  log_monitor.py            Live game-state debug monitor
-  list_decks.py             Print all player decks from the log
-  capture_templates.py      Helper for capturing UI button templates
-  download_card_data.py     Downloads Scryfall bulk card data
-tests/
-  test_log_parser.py
-  test_layout.py
-  test_three_module_architecture.py
+Starting MTG Arena bot loop
+Arena is open; waiting for a game to start
+Mulligan pending changed: ...
+Phase changed: ...
+Executing action: ...
+Verified action success: ...
+Stopping after ... consecutive failures ...
 ```
 
----
+## Known Limitations
 
-## Notes and limitations
-
-- **Standard BO1 only.** The decision engine does not handle sideboarding or best-of-three game plans.
-- **Rule-based, not ML.** Card interactions not explicitly coded are passed through as semantic "pass priority" actions.
-- **Strict separation.** The decision engine is intentionally unaware of Arena button names, templates, and coordinates.
-- **Vision is still required for execution.** Arena's log is authoritative for game rules state, but button positions, prompts, and click targets remain screen-space concerns.
-- **Screen resolution matters.** Adjust `layout.*` values in `settings.yaml` if execution clicks the wrong positions.
-- **Use responsibly.** Automated play may violate MTG Arena's Terms of Service. Use at your own risk.
+- The bot is rule-based and intentionally simple.
+- Standard BO1 is the target; sideboarding is not handled.
+- Card-specific tactics are limited.
+- Screen-space execution is still fragile.
+- Hand-card targeting needs more work for Arena's fanned layout.
+- The current source does not automatically navigate from home screen into a
+  match.
+- Use responsibly. Automated play may violate MTG Arena's Terms of Service.

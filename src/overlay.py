@@ -37,8 +37,8 @@ class Overlay:
     """Transparent, click-through overlay drawn directly above the Arena window."""
 
     _TRANSPARENT = "#010203"
-    _REFRESH_MS = 50
-    _STALE_AFTER_SECONDS = 8.0
+    _REFRESH_MS = 250
+    _STALE_AFTER_SECONDS = 2.5
 
     def __init__(self) -> None:
         self._q: queue.Queue[OverlayData | None] = queue.Queue()
@@ -87,6 +87,7 @@ class Overlay:
         def refresh() -> None:
             nonlocal latest, current_bounds, latest_at
 
+            dirty = False
             try:
                 while True:
                     item = self._q.get_nowait()
@@ -95,23 +96,28 @@ class Overlay:
                         return
                     latest = item
                     latest_at = time.monotonic()
+                    dirty = True
             except queue.Empty:
                 pass
 
             if latest is None or time.monotonic() - latest_at > self._STALE_AFTER_SECONDS:
-                canvas.delete("all")
-                root.withdraw()
-                current_bounds = None
+                if current_bounds is not None:
+                    canvas.delete("all")
+                    root.withdraw()
+                    current_bounds = None
                 root.after(self._REFRESH_MS, refresh)
                 return
 
             bounds = self._resolve_bounds(latest)
             if bounds is None:
-                root.withdraw()
-                current_bounds = None
+                if current_bounds is not None:
+                    canvas.delete("all")
+                    root.withdraw()
+                    current_bounds = None
                 root.after(self._REFRESH_MS, refresh)
                 return
 
+            bounds_changed = bounds != current_bounds
             if bounds != current_bounds:
                 current_bounds = bounds
                 root.geometry(
@@ -121,8 +127,8 @@ class Overlay:
                 root.deiconify()
                 root.lift()
 
-            canvas.delete("all")
-            if latest is not None:
+            if dirty or bounds_changed:
+                canvas.delete("all")
                 self._draw_status(canvas, latest)
                 self._draw_markers(canvas, latest, bounds)
 
