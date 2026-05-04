@@ -1,9 +1,11 @@
 from __future__ import annotations
+import logging
 import numpy as np
 import mss
 import mss.tools
 from PIL import Image
-from loguru import logger
+
+logger = logging.getLogger(__name__)
 
 _arena_hwnd: int | None = None  # cached window handle
 

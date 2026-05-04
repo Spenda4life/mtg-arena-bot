@@ -1,10 +1,12 @@
 from __future__ import annotations
 import cv2
+import logging
 import numpy as np
 import pytesseract
 import re
 from pathlib import Path
-from loguru import logger
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -268,7 +270,7 @@ class VisionDetector:
         normalized_expected = _normalize_ocr_text(expected_name)
         normalized_text = _normalize_ocr_text(text)
         matched = normalized_expected in normalized_text
-        logger.debug("Hover OCR for {} matched={} text={!r}", expected_name, matched, text[:120])
+        logger.debug("Hover OCR for %s matched=%s text=%r", expected_name, matched, text[:120])
         return matched
 
     def detect_nav_buttons(self, frame: np.ndarray, threshold: float | None = None) -> dict:

@@ -22,7 +22,7 @@ The bot can:
 - detect keep, mulligan, discard, and some button states visually
 - resolve specific hand cards by hover-scanning the hand row and OCR-reading
   enlarged card previews
-- execute keypresses and clicks through `pyautogui`
+- execute keypresses and clicks through Win32 input calls
 - verify expected state changes from the log
 - stop after repeated identical execution failures
 - optionally draw a lightweight debug overlay showing intended targets
@@ -46,7 +46,7 @@ Arena Player.log
   -> ExecutionHandler
   -> ScreenCapture + VisionDetector hover OCR
   -> CardPositionMapper fallback
-  -> pyautogui input
+  -> Win32 input
   -> verification against refreshed GameSnapshot
 ```
 

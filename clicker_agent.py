@@ -6,8 +6,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import pyautogui
-
 from decision_engine import ActionPlan, ActionType
 from game_state import CardSnapshot, GameSnapshot, GameStateManager
 from src.overlay import Overlay, OverlayData, OverlayMarker
@@ -17,9 +15,6 @@ from src.vision.detector import VisionDetector
 from src.vision.layout import CardPositionMapper
 
 LOGGER = logging.getLogger(__name__)
-
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.03
 
 _USER32 = ctypes.windll.user32
 _SCREEN_W = _USER32.GetSystemMetrics(0)

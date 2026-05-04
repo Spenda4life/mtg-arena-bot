@@ -1,8 +1,10 @@
 from __future__ import annotations
 import json
+import logging
 import sqlite3
 from pathlib import Path
-from loguru import logger
+
+logger = logging.getLogger(__name__)
 
 # Arena stores its SQLite card database under the Raw downloads directory.
 _ARENA_RAW_DIRS = [

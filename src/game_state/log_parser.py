@@ -1,13 +1,15 @@
 from __future__ import annotations
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
-from loguru import logger
 
 from src.game_state.state import GameState, CardObject, Phase, Zone
 from src.game_state.grp_db import GrpDatabase
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

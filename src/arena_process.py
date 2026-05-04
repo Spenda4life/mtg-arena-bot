@@ -1,9 +1,11 @@
 from __future__ import annotations
+import logging
 import subprocess
 import time
 import re
 from pathlib import Path
-from loguru import logger
+
+logger = logging.getLogger(__name__)
 
 _LOG_PATH = Path.home() / "AppData/LocalLow/Wizards Of The Coast/MTGA/Player.log"
 _HOME_PATTERN = re.compile(r"toSceneName.*Home")
