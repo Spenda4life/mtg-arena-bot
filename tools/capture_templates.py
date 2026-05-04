@@ -22,15 +22,14 @@ Optional (spacebar handles these via Arena's default action):
   btn_ok.png       — the "OK" / confirm button
   mana_w/u/b/r/g/c.png — mana pip icons for mana detection
 """
-import sys
-import os
 from pathlib import Path
+import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
     import tkinter as tk
-    from PIL import ImageGrab, Image
+    from PIL import ImageGrab
     import numpy as np
     import cv2
 except ImportError as e:

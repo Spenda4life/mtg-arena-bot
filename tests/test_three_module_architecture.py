@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
+
 from clicker_agent import ExecutionContext, ExecutionHandler
 from decision_engine import ActionPlan, ActionType, DecisionEngine
 from game_state import CardSnapshot, GameSnapshot, GameStateManager, PlayerSnapshot
+from src.game_state.log_parser import ArenaLogParser
 
 
 def _card(name: str, card_type: str, cmc: int = 0, instance_id: int | None = None) -> CardSnapshot:
@@ -138,6 +141,61 @@ def test_clicker_resolves_semantic_hand_card_to_coordinates():
     assert coords == (150, 702)
 
 
+def test_clicker_prefers_hover_scan_match_for_hand_card():
+    handler = ExecutionHandler.__new__(ExecutionHandler)
+
+    class _Layout:
+        @staticmethod
+        def hand_position(index: int, total: int) -> tuple[int, int]:
+            return 999, 999
+
+    class _Capture:
+        monitor = {"left": 10, "top": 20, "width": 1000, "height": 500}
+
+        @staticmethod
+        def grab() -> object:
+            return object()
+
+    class _Detector:
+        def frame_contains_card_name(
+            self,
+            frame: object,
+            expected_name: str,
+            hover_position: tuple[int, int] | None = None,
+            crop_width_fraction: float = 0.34,
+        ) -> bool:
+            return expected_name == "Mountain" and hover_position is not None and hover_position[0] >= 200
+
+    moves: list[tuple[int, int]] = []
+    handler.layout = _Layout()
+    handler.capture = _Capture()
+    handler.detector = _Detector()
+    handler.hand_hover_scan_enabled = True
+    handler.hand_hover_scan_delay = 0.0
+    handler.hand_hover_scan_points_per_card = 1
+    handler.hand_hover_scan_min_steps = 3
+    handler.hand_hover_scan_max_steps = 3
+    handler.hand_hover_scan_y = 0.9
+    handler.hand_hover_scan_x_min = 0.1
+    handler.hand_hover_scan_x_max = 0.3
+    handler.hand_hover_scan_crop_width = 0.34
+    handler._move_cursor = moves.append
+
+    state = GameSnapshot(
+        we=PlayerSnapshot(
+            hand=[_card("Shock", "instant", instance_id=7), _card("Mountain", "land", instance_id=8)]
+        )
+    )
+    coords = handler._resolve_card(
+        {"kind": "card", "instance_id": 8, "name": "Mountain", "zone": "HAND", "controller": "self"},
+        state,
+        ExecutionContext(window_bounds={"left": 10, "top": 20, "width": 1000, "height": 500}),
+    )
+
+    assert coords == (210, 470)
+    assert moves == [(110, 470), (210, 470)]
+
+
 def test_clicker_resolves_opponent_face_from_execution_context():
     handler = ExecutionHandler.__new__(ExecutionHandler)
     coords = handler._resolve_ref(
@@ -218,3 +276,8 @@ def test_clicker_preserves_longer_configured_timeout():
 def test_action_plan_has_no_coordinates_field():
     plan = ActionPlan(action_type=ActionType.PASS_PRIORITY, description="pass")
     assert not hasattr(plan, "coordinates")
+
+
+def test_log_parser_constructor_has_no_layout_dependency():
+    signature = inspect.signature(ArenaLogParser)
+    assert "layout" not in signature.parameters

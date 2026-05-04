@@ -1,5 +1,5 @@
 import pytest
-from src.vision.layout import CardPositionMapper, LayoutConfig
+from src.vision.layout import CardPositionMapper
 from src.game_state.state import CardObject, Zone
 
 

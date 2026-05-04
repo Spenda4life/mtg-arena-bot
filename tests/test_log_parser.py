@@ -1,8 +1,7 @@
 import json
-import pytest
-from src.game_state.log_parser import ArenaLogParser, JsonStreamExtractor, DeckInfo
+from src.game_state.log_parser import ArenaLogParser, JsonStreamExtractor
 from src.game_state.grp_db import GrpDatabase
-from src.game_state.state import Phase, Zone
+from src.game_state.state import Phase
 
 
 SAMPLE_GSM_PAYLOAD = {
@@ -76,7 +75,6 @@ def _make_parser(grp_db_entries: dict | None = None) -> ArenaLogParser:
     parser = ArenaLogParser.__new__(ArenaLogParser)
     parser.extractor = JsonStreamExtractor()
     parser.grp_db = grp_db
-    parser.layout = None
     parser._our_seat = None
     parser.decks = {}
     parser._next_is_deck_inventory = False

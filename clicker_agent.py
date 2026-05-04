@@ -101,6 +101,16 @@ class ExecutionHandler:
             threshold=config.get("vision", {}).get("template_threshold", 0.80),
         )
         self.layout = CardPositionMapper.from_config(config)
+        hover_scan_cfg = config.get("vision", {}).get("hover_scan", {})
+        self.hand_hover_scan_enabled = hover_scan_cfg.get("enabled", True)
+        self.hand_hover_scan_delay = float(hover_scan_cfg.get("hover_delay", 0.25))
+        self.hand_hover_scan_points_per_card = int(hover_scan_cfg.get("points_per_card", 3))
+        self.hand_hover_scan_min_steps = int(hover_scan_cfg.get("min_steps", 12))
+        self.hand_hover_scan_max_steps = int(hover_scan_cfg.get("max_steps", 32))
+        self.hand_hover_scan_y = float(hover_scan_cfg.get("y", self.layout.cfg.hand_y))
+        self.hand_hover_scan_x_min = float(hover_scan_cfg.get("x_min", self.layout.cfg.hand_x_min))
+        self.hand_hover_scan_x_max = float(hover_scan_cfg.get("x_max", self.layout.cfg.hand_x_max))
+        self.hand_hover_scan_crop_width = float(hover_scan_cfg.get("ocr_crop_width", 0.34))
 
     def capture_context(self, state: GameSnapshot) -> ExecutionContext:
         if not state.arena_running:
@@ -494,7 +504,7 @@ class ExecutionHandler:
             return None
 
         if zone == "HAND":
-            coordinates = self._resolve_hand_card_position(match_index, len(cards), context)
+            coordinates = self._resolve_hand_card_position(match_index, len(cards), context, match_card.name)
             LOGGER.debug("Resolved hand card %s -> %s", name, coordinates)
             return coordinates
 
@@ -512,7 +522,12 @@ class ExecutionHandler:
         index: int,
         total: int,
         context: ExecutionContext,
+        expected_name: str | None = None,
     ) -> tuple[int, int] | None:
+        scanned = self._scan_hand_for_card(expected_name, total, context)
+        if scanned is not None:
+            return scanned
+
         estimated_x, estimated_y = self.layout.hand_position(index, total)
         estimated = self._to_screen_pos((estimated_x, estimated_y), context.window_bounds)
         if estimated is None:
@@ -527,6 +542,62 @@ class ExecutionHandler:
         if min_distance < 100:
             return px, py
         return estimated
+
+    def _scan_hand_for_card(
+        self,
+        expected_name: str | None,
+        total: int,
+        context: ExecutionContext,
+    ) -> tuple[int, int] | None:
+        if (
+            not expected_name
+            or not getattr(self, "hand_hover_scan_enabled", False)
+            or context.window_bounds is None
+            or total <= 0
+        ):
+            return None
+
+        bounds = context.window_bounds
+        width = int(bounds.get("width", 0))
+        height = int(bounds.get("height", 0))
+        left = int(bounds.get("left", 0))
+        top = int(bounds.get("top", 0))
+        if width <= 0 or height <= 0:
+            return None
+
+        x_min = left + int(width * getattr(self, "hand_hover_scan_x_min", 0.175))
+        x_max = left + int(width * getattr(self, "hand_hover_scan_x_max", 0.825))
+        y = top + int(height * getattr(self, "hand_hover_scan_y", 0.905))
+        steps = max(
+            int(getattr(self, "hand_hover_scan_min_steps", 12)),
+            total * int(getattr(self, "hand_hover_scan_points_per_card", 3)),
+        )
+        steps = min(int(getattr(self, "hand_hover_scan_max_steps", 32)), steps)
+        if steps <= 1 or x_max <= x_min:
+            return None
+
+        LOGGER.info("Hover-scanning hand for %s", expected_name)
+        for step in range(steps):
+            x = round(x_min + (x_max - x_min) * step / (steps - 1))
+            screen_pos = (x, y)
+            self._move_cursor(screen_pos)
+            time.sleep(float(getattr(self, "hand_hover_scan_delay", 0.25)))
+
+            frame = self.capture.grab()
+            self._sync_layout_to_frame(frame)
+            frame_bounds = self.capture.monitor or bounds
+            hover_pos = self._screen_to_frame_pos(screen_pos, frame_bounds)
+            if self.detector.frame_contains_card_name(
+                frame,
+                expected_name,
+                hover_position=hover_pos,
+                crop_width_fraction=float(getattr(self, "hand_hover_scan_crop_width", 0.34)),
+            ):
+                LOGGER.info("Hover scan matched %s at %s", expected_name, screen_pos)
+                return screen_pos
+
+        LOGGER.debug("Hover scan did not match %s; falling back to hand geometry", expected_name)
+        return None
 
     def _battlefield_positions(
         self,
@@ -610,6 +681,18 @@ class ExecutionHandler:
         self._click(coordinates)
         time.sleep(0.08)
         self._click(coordinates)
+
+    @staticmethod
+    def _screen_to_frame_pos(
+        position: tuple[int, int],
+        bounds: dict[str, int] | None,
+    ) -> tuple[int, int]:
+        if bounds is None:
+            return position
+        return position[0] - int(bounds.get("left", 0)), position[1] - int(bounds.get("top", 0))
+
+    def _move_cursor(self, position: tuple[int, int]) -> None:
+        _USER32.SetCursorPos(position[0], position[1])
 
 
 @dataclass

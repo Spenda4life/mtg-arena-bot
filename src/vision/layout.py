@@ -99,8 +99,6 @@ class CardPositionMapper:
 
     def assign_hand_positions(self, hand: list) -> None:
         """Write screen_x/screen_y into each CardObject in the hand list in-place."""
-        non_lands = [c for c in hand if not c.is_land]
-        lands = [c for c in hand if c.is_land]
         total = len(hand)
         for i, card in enumerate(hand):
             card.screen_x, card.screen_y = self.hand_position(i, total)

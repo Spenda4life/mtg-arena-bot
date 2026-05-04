@@ -11,7 +11,6 @@ Only downloads if the file is missing or older than 7 days.
 """
 import json
 import sys
-import time
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta

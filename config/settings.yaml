@@ -23,6 +23,18 @@ vision:
   # Minimum confidence for template matches (0-1).
   # Keep high enough that grayed-out/inactive buttons don't match.
   template_threshold: 0.88
+  # When resolving a specific hand card, sweep the cursor across the hand row
+  # and OCR the enlarged hover preview before falling back to hand geometry.
+  hover_scan:
+    enabled: true
+    x_min: 0.175
+    x_max: 0.825
+    y: 0.905
+    points_per_card: 3
+    min_steps: 12
+    max_steps: 32
+    hover_delay: 0.25
+    ocr_crop_width: 0.34
   # Show a live topmost debug window with the captured frame and click target markers.
   debug_overlay: false
   # Minimum confidence for OCR reads

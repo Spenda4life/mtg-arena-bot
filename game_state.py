@@ -89,7 +89,6 @@ class GameStateManager:
         self.log_parser = ArenaLogParser(
             grp_db=grp_db,
             log_path=log_path or LOG_PATH,
-            layout=None,
         )
         self._state = GameState()
         self._snapshot = GameSnapshot()

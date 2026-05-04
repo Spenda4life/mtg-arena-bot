@@ -9,7 +9,6 @@ Arena must have been opened and reached the home screen at least once since
 the last log rotation for the inventory data to be present.
 """
 import sys
-import re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -29,7 +28,6 @@ def scan_log_for_decks(log_path: Path) -> dict[str, DeckInfo]:
     parser = ArenaLogParser.__new__(ArenaLogParser)
     parser.extractor = JsonStreamExtractor()
     parser.grp_db = grp_db
-    parser.layout = None
     parser._our_seat = None
     parser.decks = {}
     parser._next_is_deck_inventory = False

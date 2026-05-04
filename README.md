@@ -20,15 +20,19 @@ The bot can:
 - build a coordinate-free game snapshot
 - choose simple rule-based actions
 - detect keep, mulligan, discard, and some button states visually
+- resolve specific hand cards by hover-scanning the hand row and OCR-reading
+  enlarged card previews
 - execute keypresses and clicks through `pyautogui`
 - verify expected state changes from the log
 - stop after repeated identical execution failures
 - optionally draw a lightweight debug overlay showing intended targets
 
 Recent live validation confirmed that home-screen idling and mulligan handling
-work. First-main-phase land play is still under active debugging: when playable
-hand-card vision fails, the fallback hand geometry can click the wrong card in
-Arena's fanned hand layout.
+work. Hand-card selection now prefers hover OCR: the bot sweeps the cursor
+left-to-right along the hand row, waits for Arena's enlarged card preview, and
+checks that preview for the target card name before clicking. If OCR cannot
+identify the card, execution falls back to the older hand-geometry and playable
+outline logic.
 
 ## Runtime Flow
 
@@ -40,14 +44,16 @@ Arena Player.log
   -> DecisionEngine
   -> ActionPlan
   -> ExecutionHandler
-  -> ScreenCapture + VisionDetector + CardPositionMapper
+  -> ScreenCapture + VisionDetector hover OCR
+  -> CardPositionMapper fallback
   -> pyautogui input
   -> verification against refreshed GameSnapshot
 ```
 
 Arena's log is treated as the source of truth for game state. Screen capture is
 used only for UI facts that the log does not provide, such as button positions,
-discard prompts, playable hand outlines, and click targets.
+discard prompts, playable hand outlines, hover-preview card names, and click
+targets.
 
 ## Key Files
 
@@ -74,10 +80,16 @@ tools/download_card_data.py Card data helper
 tests/test_log_parser.py
 tests/test_layout.py
 tests/test_three_module_architecture.py
+
+docs/module_boundaries.md
+docs/ubiquitous_language.md
+docs/ai_codebase_cleanup_concepts.md
 ```
 
 The current source path does not include an automatic game-start navigator. The
 active `run` command waits for a game to start and then acts on the game state.
+See `docs/module_boundaries.md` for the current dependency direction and
+`docs/ubiquitous_language.md` for the shared domain vocabulary.
 
 ## Prerequisites
 
@@ -124,10 +136,11 @@ python main.py launch
 python main.py kill
 ```
 
-Run tests:
+Run tests and lint:
 
 ```bash
-pytest
+python -m pytest
+python -m ruff check .
 ```
 
 ## Configuration
@@ -147,6 +160,16 @@ arena:
 
 vision:
   template_threshold: 0.88
+  hover_scan:
+    enabled: true
+    x_min: 0.175
+    x_max: 0.825
+    y: 0.905
+    points_per_card: 3
+    min_steps: 12
+    max_steps: 32
+    hover_delay: 0.25
+    ocr_crop_width: 0.34
   debug_overlay: false
   debug_screenshots: false
 
@@ -164,6 +187,11 @@ Set `vision.debug_overlay: true` locally when diagnosing click targets. The
 overlay is intentionally lightweight: it redraws only when new action data
 arrives, refreshes at a low rate, and hides quickly when stale. It is still a
 transparent topmost window over a game, so leave it off for normal play.
+
+Tune `vision.hover_scan.hover_delay` first if Arena's enlarged hand-card preview
+does not appear before OCR runs. Increase `points_per_card` or `min_steps` if
+the cursor skips over fanned cards; narrow `x_min` and `x_max` if the scan
+wastes time outside the actual hand.
 
 ## Live Testing
 
@@ -194,8 +222,9 @@ Stopping after ... consecutive failures ...
 - The bot is rule-based and intentionally simple.
 - Standard BO1 is the target; sideboarding is not handled.
 - Card-specific tactics are limited.
-- Screen-space execution is still fragile.
-- Hand-card targeting needs more work for Arena's fanned layout.
+- Screen-space execution is still fragile, though hand-card targeting now uses
+  hover OCR before falling back to geometry.
+- Hover OCR depends on Tesseract, card preview timing, and Arena visual clarity.
 - The current source does not automatically navigate from home screen into a
   match.
 - Use responsibly. Automated play may violate MTG Arena's Terms of Service.

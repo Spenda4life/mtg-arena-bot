@@ -91,7 +91,6 @@ def _load_arena_cards(path: Path) -> dict[int, dict]:
                 continue
             colors = card.get("colors", [])
             subtypes = card.get("subtypes", [])
-            supertypes = card.get("supertypes", [])
             card_types = card.get("types", [])
 
             db[grp] = {

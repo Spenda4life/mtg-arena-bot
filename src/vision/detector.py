@@ -1,9 +1,8 @@
 from __future__ import annotations
-import os
-import re
 import cv2
 import numpy as np
 import pytesseract
+import re
 from pathlib import Path
 from loguru import logger
 
@@ -65,6 +64,10 @@ def _ocr_text(roi: np.ndarray, whitelist: str = "") -> str:
     if whitelist:
         config += f" -c tessedit_char_whitelist={whitelist}"
     return pytesseract.image_to_string(gray, config=config).strip().upper()
+
+
+def _normalize_ocr_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
 def _match_template(frame: np.ndarray, template_name: str, threshold: float = 0.80) -> tuple[int, int] | None:
@@ -229,6 +232,44 @@ class VisionDetector:
         centers.sort(key=lambda p: p[0])
         logger.debug(f"Playable hand cards detected: {len(centers)} at {centers}")
         return centers
+
+    def frame_contains_card_name(
+        self,
+        frame: np.ndarray,
+        expected_name: str,
+        hover_position: tuple[int, int] | None = None,
+        crop_width_fraction: float = 0.34,
+    ) -> bool:
+        """Return True when OCR sees the expected card name in the hovered card popup."""
+        if not expected_name:
+            return False
+
+        h, w = frame.shape[:2]
+        crop_w = int(w * crop_width_fraction)
+        if hover_position is None:
+            x0 = max(0, (w - crop_w) // 2)
+        else:
+            x0 = max(0, min(w - crop_w, int(hover_position[0]) - crop_w // 2))
+
+        # Hovered hand cards enlarge above the bottom hand row. Crop that broad
+        # vertical band so the card title is included without OCRing the full UI.
+        y0 = int(h * 0.16)
+        y1 = int(h * 0.84)
+        roi = frame[y0:y1, x0:x0 + crop_w]
+        if roi.size == 0:
+            return False
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        text = pytesseract.image_to_string(thresh, config="--psm 6")
+        normalized_expected = _normalize_ocr_text(expected_name)
+        normalized_text = _normalize_ocr_text(text)
+        matched = normalized_expected in normalized_text
+        logger.debug("Hover OCR for {} matched={} text={!r}", expected_name, matched, text[:120])
+        return matched
 
     def detect_nav_buttons(self, frame: np.ndarray, threshold: float | None = None) -> dict:
         t = threshold or self.threshold

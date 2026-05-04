@@ -10,7 +10,7 @@ import yaml
 
 from clicker_agent import ExecutionHandler, ExecutionStatus
 from decision_engine import DecisionEngine
-from game_state import GameStateManager
+from game_state import GameSnapshot, GameStateManager
 from src.arena_process import ArenaProcess
 from src.overlay import Overlay
 
